@@ -61,8 +61,9 @@ final class MLXServerManager: ObservableObject {
     private let baseDir: URL
 
     /// 依赖规格标记，变更时触发增量安装
-    private static let depsSpec = "mlx-vlm>=0.6.0,pymupdf,python-docx"
-    private static let pipPackages = ["mlx-vlm>=0.6.0", "pymupdf", "python-docx"]
+    /// （v1.3 起版面引擎移到 Swift 侧，sidecar 仅需 mlx-vlm）
+    private static let depsSpec = "mlx-vlm>=0.6.0"
+    private static let pipPackages = ["mlx-vlm>=0.6.0"]
 
     init() {
         let dir = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
@@ -127,7 +128,7 @@ final class MLXServerManager: ObservableObject {
             guard venvStatus == 0 else { throw MLXSetupError.commandFailed("python3 -m venv", venvStatus) }
         }
 
-        state = .installing("安装依赖（mlx-vlm / pymupdf / python-docx）")
+        state = .installing("安装依赖（mlx-vlm）")
         // 国内镜像加速 pip
         var pipArgs = ["-m", "pip", "install", "-U"] + Self.pipPackages
         if settings.hfMirror {

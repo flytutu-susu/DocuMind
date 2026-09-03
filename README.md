@@ -7,8 +7,8 @@ macOS 文档智能平台（Swift + SwiftUI）：**本地 Unlimited-OCR 结构化
 | 功能 | 说明 |
 | --- | --- |
 | 文档识别 | **默认本地运行百度开源 [Unlimited-OCR](https://huggingface.co/baidu/Unlimited-OCR) 3B 模型（MLX MXFP8 量化版）**，grounding 模式输出**结构化块（标题/正文/表格/图片 + bbox 坐标）**，完全离线免费；可切换 Int8/Int4/MXFP4 档位；支持 PDF（文字版自动走文本层）、图片、docx、xlsx。也可切换为百度智能云 OCR（标准/高精度/无限制套餐） |
-| PDF 转 Word（版面保持） | 本地引擎管线：PDF → grounding OCR（结构化块）→ **Layout Engine** → **python-docx** 生成。标题应用 Heading 样式、markdown 表格转**真表格**、插图按 bbox **从页面裁剪嵌入**、逐页分页 |
-| 任务队列 | OCR/转换统一进入**串行任务队列**（状态持久化 SQLite：pending/running/success/failed），Web/App 提交即返回 task_id，不阻塞；100 页 PDF 与单张图片互不阻塞排队执行 |
+| PDF 转 Word（版面保持） | **纯 Swift Layout Engine**（`Services/Layout/`）：PDF → grounding OCR（结构化块 `{category,bbox,content,page}`）→ `LayoutAnalyzer`（类别映射/标题级别推断/markdown 表格解析）→ `DocxLayoutBuilder`（OOXML：Heading 样式、真表格 w:tbl、插图 bbox 裁剪内联嵌入、分页符）。文字版 PDF 走文本层直出快路径 |
+| 任务队列 | **Worker Pool 调度**：OCR（推理）/ Convert（转换）/ Parse（本地解析）三条独立流水线并行分发，任务持久化 SQLite（pending/running/success/failed），Web/App 提交即返回 task_id；长 PDF 转换不阻塞图片识别入队 |
 | 文档库 | 所有处理文件自动入库：`documents` / `document_versions` / `ocr_results` / `tasks` 四表，文件存于 `~/Library/Application Support/DocuMind/library/`，App 与 Web 均可检索、查看、导出 |
 | 局域网 Web | 内置零依赖 HTTP 服务（Network.framework），局域网设备浏览器打开 `http://<Mac的IP>:8080` 即可使用全部功能 |
 | 云端 LLM | OpenAI 兼容协议（**DeepSeek、Kimi、通义千问、OpenAI 及任意兼容网关**）+ **Anthropic Messages 协议**，App 内 SSE 流式输出 |
@@ -18,7 +18,7 @@ macOS 文档智能平台（Swift + SwiftUI）：**本地 Unlimited-OCR 结构化
 - macOS 13+，Apple Silicon（M1 16GB 可流畅运行本地 3B 模型）
 - Python 3.10+（Xcode 命令行工具自带的 `/usr/bin/python3` 即可，App 会自动创建独立 venv，不污染系统环境）
 - 构建需要 Xcode 15+ 或 Command Line Tools（含 Swift 5.9+）
-- 首次启动本地引擎需联网下载依赖（mlx-vlm / pymupdf / python-docx，~350MB）和模型（~3.6GB），默认走国内镜像加速
+- 首次启动本地引擎需联网下载依赖（mlx-vlm，~300MB）和模型（~3.6GB），默认走国内镜像加速
 
 ## 构建与运行
 
@@ -41,25 +41,27 @@ open dist/DocuMind.app
 3. **大模型**：设置 → 大模型 → 添加预设（DeepSeek / Kimi / 千问 / OpenAI / Anthropic 已内置 Base URL 与默认模型），填入 API Key。
 4. **局域网服务**：「局域网服务」页点「启动服务」，手机/其他电脑浏览器访问列表地址。
 
-## 核心管线：版面保持的 PDF → Word
+## 核心管线：版面保持的 PDF → Word（纯 Swift Layout Engine）
 
 ```
-PDF ──pymupdf 渲染 200dpi──> 页面图
-      │
-      ▼  Unlimited-OCR grounding 模式
-结构化块 [{category: title|text|table|image, bbox, content, page}]
-      │
-      ▼  Layout Engine（Python sidecar）
-      ├─ title/header → docx Heading 样式
-      ├─ text/footer  → 段落
-      ├─ table        → markdown 表格 → 真 docx 表格（Table Grid）
-      └─ image        → bbox 裁剪页面 → docx 嵌入图片
-      │
-      ▼  python-docx
-output.docx（逐页分页符）
+PDF 页面（PDFKit 渲染 2x）
+   │
+   ▼  Unlimited-OCR grounding（本地 sidecar）
+[OCRBlock]  {category: title|text|table|image, bbox(归一化), content, page}
+   │
+   ▼  Services/Layout/LayoutAnalyzer.swift
+[LayoutElement]  heading(level 按 bbox 高度推断) / paragraph / table / image / pageBreak
+   │                                ├─ image：按 bbox 从页面渲染裁剪（CoreGraphics）
+   ▼  Services/Layout/DocxLayoutBuilder.swift（OOXML）
+   title → Heading1-3 样式（Word 大纲可识别）
+   table → 真 w:tbl（Table Grid 边框，首行加粗）
+   image → w:drawing 内联嵌入（word/media/ + 关系表，宽度自适应）
+   │
+   ▼
+output.docx
 ```
 
-对比旧管线（PDF→纯文本→重建 docx）：会丢失布局/图片/页眉页脚/表格结构；新管线保留**语义级版面**（块类型 + 坐标 + 表格结构 + 插图）。
+对比旧管线（PDF→纯文本→重建 docx）会丢失布局/图片/表格结构；Layout Engine 保留**语义级版面**。文字版 PDF 自动走文本层直出快路径（零误差、秒级）。
 
 ## 本地引擎架构
 
@@ -69,8 +71,7 @@ App 内嵌一个 Python sidecar（`MLXServerScript.swift`），全部文件在 `
 App(Swift) ──HTTP 127.0.0.1:8091──> mlx_server.py (venv 内 python)
                                         └─ mlx_vlm.load("mlx-community/Unlimited-OCR-mxfp8")
 POST /ocr     {image: base64, mode: text|markdown} → {text, blocks:[{category,bbox,content,page}]}
-POST /convert (PDF 二进制) → output.docx
-GET  /health  → {status, model, convert:{current,total}}   ← 转换进度
+GET  /health  → {status, model, error}
 ```
 
 - 推理全局串行（MLX 非线程安全）；输出自动剥离 `<|det|>` 定位标记与分词伪影
@@ -116,12 +117,17 @@ Sources/DocuMind/
 │   ├── Records.swift           # 数据记录 + OCRBlock 结构化块
 │   └── DocumentStore.swift     # 四表 CRUD + 文件入库
 ├── Services/
-│   ├── TaskQueue.swift         # 串行任务队列（持久化，Web/App 共用）
+│   ├── TaskQueue.swift         # Worker Pool 调度（OCR/Convert/Parse 三流水线，持久化）
 │   ├── OCREngine.swift         # OCR 引擎协议 + 工厂（本地/云端可切换）
 │   ├── BaiduOCRService.swift   # 百度云 OCR（token 缓存/重试/图片压缩）
-│   ├── LocalVLMOCRService.swift# 本地 MLX 客户端（blocks + 版面转换 + 进度轮询）
+│   ├── LocalVLMOCRService.swift# 本地 MLX 推理客户端（blocks 解析）
 │   ├── MLXServerManager.swift  # venv 引导/pip 安装/进程生命周期/健康检查
-│   ├── MLXServerScript.swift   # 内嵌 Python sidecar（推理 + Layout Engine + python-docx）
+│   ├── MLXServerScript.swift   # 内嵌 Python sidecar（纯推理）
+│   ├── Layout/                 # ★ 版面引擎（纯 Swift，可测试）
+│   │   ├── Block.swift         #   LayoutElement 版面元素模型
+│   │   ├── LayoutAnalyzer.swift#   OCRBlock → 版面元素（类别映射/表格解析/标题级别）
+│   │   ├── DocxLayoutBuilder.swift # 版面元素 → OOXML docx（样式/表格/插图/分页）
+│   │   └── LayoutPDFConverter.swift# 转换编排（逐页渲染→识别→裁剪→构建，内存受控）
 │   ├── DocumentProcessor.swift # PDF/图片/docx/xlsx 统一处理管线
 │   ├── OfficeTextExtractor.swift
 │   ├── DocxBuilder.swift       # 最小 OOXML docx 生成器（云端引擎纯文本路径）
@@ -142,4 +148,4 @@ Sources/DocuMind/
 
 - 模型：[baidu/Unlimited-OCR](https://huggingface.co/baidu/Unlimited-OCR)（MIT）· [论文 arXiv:2606.23050](https://arxiv.org/abs/2606.23050)
 - MLX 量化（[sahilchachra 量化系列](https://huggingface.co/sahilchachra)，FUNSD 评测）：MXFP8（CER 1.46%）· Int8 1.57% · Int4 2.29% · MXFP4 2.39%
-- 运行时：[mlx-vlm](https://github.com/Blaizzy/mlx-vlm)（≥ 0.6.0）· 文档生成：python-docx
+- 运行时：[mlx-vlm](https://github.com/Blaizzy/mlx-vlm)（≥ 0.6.0）

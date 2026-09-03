@@ -1,4 +1,5 @@
 import XCTest
+import ZIPFoundation
 @testable import DocuMind
 
 final class DocuMindTests: XCTestCase {
@@ -99,5 +100,75 @@ final class DocuMindTests: XCTestCase {
 
         XCTAssertTrue(try store.listDocuments().contains(where: { $0.id == doc.id }))
         XCTAssertTrue(try store.listTasks().contains(where: { $0.id == task.id }))
+    }
+
+    // MARK: - Layout 层
+
+    /// markdown 表格解析
+    func testLayoutAnalyzerTableParse() {
+        let rows = LayoutAnalyzer.parseMarkdownTable("| 姓名 | 年龄 |\n|---|---|\n| 张三 | 30 |")
+        XCTAssertEqual(rows, [["姓名", "年龄"], ["张三", "30"]])
+        XCTAssertNil(LayoutAnalyzer.parseMarkdownTable("这里没有表格"))
+        // 单列不视为表格
+        XCTAssertNil(LayoutAnalyzer.parseMarkdownTable("| 只有一列 |\n|---|"))
+    }
+
+    /// blocks -> 版面元素：类别映射 + 退化插图丢弃
+    func testLayoutAnalyzerElements() {
+        let blocks = [
+            OCRBlock(category: "title", bbox: [0.1, 0.02, 0.9, 0.06], content: "第一章 概述", page: 0),
+            OCRBlock(category: "text", bbox: [], content: "姓名 张三", page: 0),
+            OCRBlock(category: "table", bbox: [], content: "| 姓名 | 年龄 |\n|---|---|\n| 张三 | 30 |", page: 0),
+            OCRBlock(category: "image", bbox: [0.2, 0.3, 0.8, 0.6], content: "", page: 0),
+            OCRBlock(category: "image", bbox: [0.2, 0.3, 0.205, 0.31], content: "", page: 0)  // 退化区域应丢弃
+        ]
+        let elements = LayoutAnalyzer().elements(for: blocks, page: 0)
+        XCTAssertEqual(elements.count, 4)   // heading + paragraph + table + image
+        if case .heading(_, let level) = elements[0] { XCTAssertEqual(level, 1) } else { XCTFail("首元素应为标题") }
+        if case .table(let rows) = elements[2] { XCTAssertEqual(rows.count, 2) } else { XCTFail("第三元素应为表格") }
+        guard case .image = elements[3] else { return XCTFail("第四元素应为插图") }
+    }
+
+    /// 版面化 DOCX：标题样式 + 真表格 + 内联插图 + 分页，且可被回读
+    func testDocxLayoutBuilder() throws {
+        // 1x1 红点 PNG
+        let png = Data(base64Encoded: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==")!
+        let imageID = UUID()
+        let elements: [LayoutElement] = [
+            .heading(text: "第一章 概述", level: 1),
+            .paragraph(text: "姓名 张三"),
+            .table(rows: [["姓名", "年龄"], ["张三", "30"]]),
+            .image(id: imageID, page: 0, bbox: [0.2, 0.3, 0.8, 0.6]),
+            .pageBreak,
+            .paragraph(text: "第二页内容")
+        ]
+        let data = try DocxLayoutBuilder().build(elements: elements, crops: [imageID: png])
+
+        // zip 魔数 PK
+        XCTAssertEqual(data[0], 0x50)
+        XCTAssertEqual(data[1], 0x4B)
+
+        let tmp = FileManager.default.temporaryDirectory
+            .appendingPathComponent("layout-test-\(UUID().uuidString).docx")
+        defer { try? FileManager.default.removeItem(at: tmp) }
+        try data.write(to: tmp)
+
+        // 校验包部件与 document.xml 结构
+        let archive = try Archive(url: tmp, accessMode: .read)
+        XCTAssertNotNil(archive["word/media/image1.png"], "插图应写入 word/media/")
+        guard let entry = archive["word/document.xml"] else { return XCTFail("缺少 document.xml") }
+        var xmlData = Data()
+        _ = try archive.extract(entry, consumer: { xmlData.append($0) })
+        let xml = String(decoding: xmlData, as: UTF8.self)
+        XCTAssertTrue(xml.contains("<w:tbl>"), "应包含真表格")
+        XCTAssertTrue(xml.contains("w:drawing"), "应包含内联插图")
+        XCTAssertTrue(xml.contains("w:pStyle w:val=\"Heading1\""), "应应用 Heading1 样式")
+        XCTAssertTrue(xml.contains("w:br w:type=\"page\""), "应包含分页符")
+
+        // 文本可回读（含表格单元格）
+        let text = try OfficeTextExtractor.extractDocx(url: tmp)
+        XCTAssertTrue(text.contains("第一章 概述"))
+        XCTAssertTrue(text.contains("张三"))
+        XCTAssertTrue(text.contains("第二页内容"))
     }
 }

@@ -148,14 +148,14 @@ final class DocumentProcessor {
 
     // MARK: - PDF 页面渲染
 
-    /// 将 PDF 页面渲染为 JPEG（2x 缩放，长边不超 4096，供 OCR 使用）
-    static func renderPageToJPEG(_ page: PDFPage, scale: CGFloat = 2.0, quality: CGFloat = 0.85) throws -> Data {
+    /// 将 PDF 页面渲染为 CGImage（2x 缩放，长边不超 4096）
+    static func renderPageToCGImage(_ page: PDFPage, scale: CGFloat = 2.0) throws -> CGImage {
         let bounds = page.bounds(for: .mediaBox)
         let maxSide = max(bounds.width, bounds.height)
-        // 2x 缩放提升识别率；同时保证渲染后长边不超过百度 4096px 限制
+        // 2x 缩放提升识别率；同时保证渲染后长边不超过模型 4096px 限制
         let effectiveScale = maxSide > 0 ? min(scale, 4096.0 / maxSide) : scale
-        let pixelWidth = Int(bounds.width * effectiveScale)
-        let pixelHeight = Int(bounds.height * effectiveScale)
+        let pixelWidth = max(Int(bounds.width * effectiveScale), 1)
+        let pixelHeight = max(Int(bounds.height * effectiveScale), 1)
 
         guard let rep = NSBitmapImageRep(
             bitmapDataPlanes: nil,
@@ -188,10 +188,36 @@ final class DocumentProcessor {
         cgContext.restoreGState()
 
         NSGraphicsContext.restoreGraphicsState()
+        guard let image = rep.cgImage else {
+            throw DocumentProcessError.cannotOpenPDF
+        }
+        return image
+    }
 
-        guard let jpeg = rep.representation(using: .jpeg, properties: [.compressionFactor: quality]) else {
+    /// 将 PDF 页面渲染为 JPEG（供 OCR 使用）
+    static func renderPageToJPEG(_ page: PDFPage, scale: CGFloat = 2.0, quality: CGFloat = 0.85) throws -> Data {
+        let cgImage = try renderPageToCGImage(page, scale: scale)
+        let bitmap = NSBitmapImageRep(cgImage: cgImage)
+        guard let jpeg = bitmap.representation(using: .jpeg, properties: [.compressionFactor: quality]) else {
             throw DocumentProcessError.cannotOpenPDF
         }
         return jpeg
+    }
+
+    /// 从页面渲染图按归一化 bbox 裁剪出 PNG 数据（插图提取）
+    static func cropPNG(from image: CGImage, normalizedBBox bbox: [Double]) -> Data? {
+        guard bbox.count == 4 else { return nil }
+        let width = CGFloat(image.width)
+        let height = CGFloat(image.height)
+        let full = CGRect(x: 0, y: 0, width: width, height: height)
+        let rect = CGRect(x: CGFloat(bbox[0]) * width,
+                          y: CGFloat(bbox[1]) * height,
+                          width: CGFloat(bbox[2] - bbox[0]) * width,
+                          height: CGFloat(bbox[3] - bbox[1]) * height)
+            .integral
+            .intersection(full)
+        guard rect.width >= 16, rect.height >= 16,
+              let cropped = image.cropping(to: rect) else { return nil }
+        return NSBitmapImageRep(cgImage: cropped).representation(using: .png, properties: [:])
     }
 }

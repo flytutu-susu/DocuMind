@@ -1,7 +1,17 @@
 import Foundation
 
-/// 串行任务队列：OCR / 转换任务排队执行，状态持久化到 SQLite。
-/// App 界面与局域网 Web API 共用这一个队列，请求入队后立即返回 task_id，不阻塞调用方。
+/// 任务调度器（Worker Pool）：按任务类型分派到独立流水线并行执行。
+///
+///     TaskQueue（入队 / 持久化 / 状态发布）
+///        │ Dispatcher
+///        ├─ OCR Worker ×1     （图片 / 扫描版 PDF 识别 —— 走推理引擎）
+///        ├─ Convert Worker ×1 （PDF→Word —— 走推理引擎 + 版面构建）
+///        └─ Parse Worker ×1   （docx/xlsx 本地解析 —— 纯 CPU，秒级）
+///
+/// 说明：
+/// - 本地 MLX 引擎内部串行（gen_lock），OCR/Convert 两条 lane 在 HTTP 层并行、引擎层排队，
+///   单用户长转换不阻塞他人的图片识别请求分发；云端引擎（百度）则真实并行。
+/// - lane 并发度目前固定 1（M1 单推理引擎的合理值），结构上支持按 lane 扩展。
 @MainActor
 final class TaskQueue: ObservableObject {
     @Published private(set) var tasks: [TaskRecord] = []
@@ -9,8 +19,17 @@ final class TaskQueue: ObservableObject {
     let store: DocumentStore
     private let settingsStore: SettingsStore
 
-    private var pendingIDs: [UUID] = []
-    private var workerRunning = false
+    // MARK: - Lane（流水线）
+
+    enum Lane: String, CaseIterable {
+        case ocr
+        case convert
+        case parse
+    }
+
+    private var lanePending: [Lane: [UUID]] = Dictionary(uniqueKeysWithValues: Lane.allCases.map { ($0, []) })
+    private var laneRunning: [Lane: Bool] = Dictionary(uniqueKeysWithValues: Lane.allCases.map { ($0, false) })
+    private var taskLane: [UUID: Lane] = [:]
 
     init(store: DocumentStore, settingsStore: SettingsStore) {
         self.store = store
@@ -25,34 +44,29 @@ final class TaskQueue: ObservableObject {
 
     // MARK: - 入队
 
-    /// 文件入库 + 创建 OCR 任务
+    /// 文件入库 + 创建 OCR 任务（docx/xlsx 自动路由到 Parse lane）
     @discardableResult
     func enqueueOCR(fileURL: URL) throws -> UUID {
         let kind = DocumentKind(fileExtension: fileURL.pathExtension)
         guard kind != .unknown else { throw DocumentProcessError.unsupportedType }
         let doc = try store.createDocument(name: fileURL.lastPathComponent, kind: kind, sourceFile: fileURL)
         let task = try store.createTask(kind: .ocr, documentID: doc.id, fileName: doc.name)
-        pendingIDs.append(task.id)
-        refresh()
-        kickWorker()
+        enqueue(taskID: task.id, lane: laneForDocumentKind(kind))
         return task.id
     }
 
     /// 原始字节入库（Web 上传）+ 创建 OCR 任务
     @discardableResult
     func enqueueOCR(data: Data, fileName: String) throws -> UUID {
-        let tmp = FileManager.default.temporaryDirectory
-            .appendingPathComponent("documind-incoming-\(UUID().uuidString)")
-        try data.write(to: tmp)
-        defer { try? FileManager.default.removeItem(at: tmp) }
-        // 用原始文件名入库，临时文件仅作搬运
         let kind = DocumentKind(fileExtension: (fileName as NSString).pathExtension)
         guard kind != .unknown else { throw DocumentProcessError.unsupportedType }
-        let doc = try store.createDocument(name: fileName, kind: kind, sourceFile: tmp.renamed(to: fileName))
+        let tmp = FileManager.default.temporaryDirectory
+            .appendingPathComponent("documind-incoming-\(UUID().uuidString)-\(fileName)")
+        try data.write(to: tmp)
+        defer { try? FileManager.default.removeItem(at: tmp) }
+        let doc = try store.createDocument(name: fileName, kind: kind, sourceFile: tmp)
         let task = try store.createTask(kind: .ocr, documentID: doc.id, fileName: fileName)
-        pendingIDs.append(task.id)
-        refresh()
-        kickWorker()
+        enqueue(taskID: task.id, lane: laneForDocumentKind(kind))
         return task.id
     }
 
@@ -60,42 +74,54 @@ final class TaskQueue: ObservableObject {
     func enqueueConvert(fileURL: URL) throws -> UUID {
         let doc = try store.createDocument(name: fileURL.lastPathComponent, kind: .pdf, sourceFile: fileURL)
         let task = try store.createTask(kind: .pdfToWord, documentID: doc.id, fileName: doc.name)
-        pendingIDs.append(task.id)
-        refresh()
-        kickWorker()
+        enqueue(taskID: task.id, lane: .convert)
         return task.id
     }
 
     @discardableResult
     func enqueueConvert(data: Data, fileName: String) throws -> UUID {
-        let tmpDir = FileManager.default.temporaryDirectory
-        let tmp = tmpDir.appendingPathComponent("documind-incoming-\(UUID().uuidString).pdf")
+        let tmp = FileManager.default.temporaryDirectory
+            .appendingPathComponent("documind-incoming-\(UUID().uuidString).pdf")
         try data.write(to: tmp)
         defer { try? FileManager.default.removeItem(at: tmp) }
         let doc = try store.createDocument(name: fileName, kind: .pdf, sourceFile: tmp)
         let task = try store.createTask(kind: .pdfToWord, documentID: doc.id, fileName: fileName)
-        pendingIDs.append(task.id)
-        refresh()
-        kickWorker()
+        enqueue(taskID: task.id, lane: .convert)
         return task.id
     }
 
-    // MARK: - 执行
+    // MARK: - Dispatcher
 
-    private func kickWorker() {
-        guard !workerRunning else { return }
-        workerRunning = true
-        Task { await workerLoop() }
+    private func laneForDocumentKind(_ kind: DocumentKind) -> Lane {
+        switch kind {
+        case .docx, .xlsx: return .parse
+        default: return .ocr
+        }
     }
 
-    private func workerLoop() async {
-        while !pendingIDs.isEmpty {
-            let id = pendingIDs.removeFirst()
-            await run(id)
+    private func enqueue(taskID: UUID, lane: Lane) {
+        taskLane[taskID] = lane
+        lanePending[lane, default: []].append(taskID)
+        refresh()
+        kickLane(lane)
+    }
+
+    private func kickLane(_ lane: Lane) {
+        guard laneRunning[lane] != true else { return }
+        laneRunning[lane] = true
+        Task { await laneLoop(lane) }
+    }
+
+    private func laneLoop(_ lane: Lane) async {
+        while let nextID = lanePending[lane]?.first {
+            lanePending[lane]?.removeFirst()
+            await run(nextID)
             refresh()
         }
-        workerRunning = false
+        laneRunning[lane] = false
     }
+
+    // MARK: - 执行
 
     private func run(_ id: UUID) async {
         guard let task = try? store.task(id) else { return }
@@ -149,16 +175,21 @@ final class TaskQueue: ObservableObject {
         let outURL = outDir.appendingPathComponent("\(taskID.uuidString).docx")
 
         let data: Data
-        var engineName: String
+        let engineName: String
         if settings.ocrEngine == .localMLX {
-            // 版面保持转换：本地模型 grounding -> Layout Engine -> python-docx
-            let service = LocalVLMOCRService(port: settings.mlxPort, mode: settings.mlxPromptMode)
-            engineName = "本地 Unlimited-OCR · 版面引擎"
-            data = try await service.convertPDFToDocx(pdfURL: fileURL, fileName: task.fileName) { p, msg in
+            // 版面保持转换（纯 Swift Layout Engine）：
+            // PDF → grounding blocks → LayoutAnalyzer → DocxLayoutBuilder
+            guard let engine = OCREngineFactory.make(settings: settings) else {
+                throw DocumentProcessError.ocrUnavailable
+            }
+            let converter = LayoutPDFConverter(engine: engine)
+            let result = try await converter.convert(pdfURL: fileURL) { p, msg in
                 Task { @MainActor in self.update(taskID, progress: p, message: msg) }
             }
+            data = result.data
+            engineName = result.engine
         } else {
-            // 云端引擎：纯文本路径
+            // 云端引擎：纯文本路径（百度接口无语义块，版面能力有限）
             let legacy = PDFToWordService(processor: DocumentProcessor(
                 ocrEngine: OCREngineFactory.make(settings: settings),
                 preferPDFTextLayer: settings.preferPDFTextLayer))
@@ -198,14 +229,5 @@ final class TaskQueue: ObservableObject {
     func resultText(for task: TaskRecord) -> String? {
         guard let docID = task.documentID else { return nil }
         return try? store.latestOCRResult(of: docID)?.text
-    }
-}
-
-private extension URL {
-    /// 重命名临时文件以保留原始文件名后缀（供类型判断）
-    func renamed(to fileName: String) -> URL {
-        let dest = deletingLastPathComponent().appendingPathComponent(fileName)
-        try? FileManager.default.moveItem(at: self, to: dest)
-        return FileManager.default.fileExists(atPath: dest.path) ? dest : self
     }
 }

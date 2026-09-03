@@ -20,8 +20,9 @@ enum MLXServiceError: LocalizedError {
     }
 }
 
-/// 本地 Unlimited-OCR (MLX) 推理服务的 HTTP 客户端。
+/// 本地 Unlimited-OCR (MLX) 推理服务的 HTTP 客户端（纯推理）。
 /// 对应内嵌 Python sidecar（见 MLXServerScript.swift），仅监听 127.0.0.1。
+/// 版面保持的 PDF→Word 由 Swift 侧 Layout 层完成（Services/Layout/），不经由此服务。
 struct LocalVLMOCRService: OCREngine {
     let port: Int
     let mode: MLXOutputMode
@@ -31,7 +32,7 @@ struct LocalVLMOCRService: OCREngine {
     private let session: URLSession = {
         let config = URLSessionConfiguration.default
         config.timeoutIntervalForRequest = 600        // 单页 OCR
-        config.timeoutIntervalForResource = 6 * 3600  // 整本 PDF 转换可能耗时很长
+        config.timeoutIntervalForResource = 900
         return URLSession(configuration: config)
     }()
 
@@ -76,67 +77,6 @@ struct LocalVLMOCRService: OCREngine {
             let page = (item["page"] as? NSNumber)?.intValue ?? 0
             return OCRBlock(category: category, bbox: bbox, content: content, page: page)
         }
-    }
-
-    // MARK: - 版面保持的 PDF -> Word
-
-    /// 上传整本 PDF 给本地版面引擎，轮询 /health 获取页级进度，返回 docx 数据。
-    func convertPDFToDocx(pdfURL: URL,
-                          fileName: String,
-                          progress: @escaping @Sendable (Double, String) -> Void) async throws -> Data {
-        let pdfData = try Data(contentsOf: pdfURL)
-
-        let url = URL(string: baseURL + "/convert")!
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.setValue("application/pdf", forHTTPHeaderField: "Content-Type")
-        let encodedName = fileName.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? "document.pdf"
-        request.setValue(encodedName, forHTTPHeaderField: "X-File-Name")
-        request.httpBody = pdfData
-
-        // 进度轮询（sidecar 在 /health 中暴露 convert.current/total）
-        let poller = Task { [baseURL, session] in
-            let healthURL = URL(string: baseURL + "/health")!
-            while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: 1_500_000_000)
-                guard let (data, _) = try? await session.data(from: healthURL),
-                      let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                      let convert = json["convert"] as? [String: Any],
-                      let current = (convert["current"] as? NSNumber)?.intValue,
-                      let total = (convert["total"] as? NSNumber)?.intValue, total > 0
-                else { continue }
-                let p = 0.05 + 0.9 * Double(current) / Double(total)
-                progress(p, "版面识别 第 \(current)/\(total) 页…")
-            }
-        }
-
-        progress(0.02, "上传 PDF 到本地版面引擎…")
-        let result: (Data, URLResponse)
-        do {
-            result = try await send(request)
-        } catch {
-            poller.cancel()
-            throw error
-        }
-        poller.cancel()
-        progress(0.98, "生成 Word 文档…")
-
-        let (data, response) = result
-        let statusCode = (response as? HTTPURLResponse)?.statusCode ?? -1
-        guard statusCode == 200 else {
-            var message = "未知错误"
-            if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-               let err = json["error"] as? String {
-                message = err
-            }
-            if statusCode == 503 { throw MLXServiceError.modelNotReady(message) }
-            throw MLXServiceError.httpError(statusCode, message)
-        }
-        // docx 魔数校验（PK）
-        guard data.count > 4, data[0] == 0x50, data[1] == 0x4B else {
-            throw MLXServiceError.badResponse
-        }
-        return data
     }
 
     // MARK: - 内部
