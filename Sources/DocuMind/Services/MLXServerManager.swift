@@ -60,8 +60,9 @@ final class MLXServerManager: ObservableObject {
     private let fm = FileManager.default
     private let baseDir: URL
 
-    /// 依赖规格标记，变更时触发重装
-    private static let depsSpec = "mlx-vlm>=0.6.0"
+    /// 依赖规格标记，变更时触发增量安装
+    private static let depsSpec = "mlx-vlm>=0.6.0,pymupdf,python-docx"
+    private static let pipPackages = ["mlx-vlm>=0.6.0", "pymupdf", "python-docx"]
 
     init() {
         let dir = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
@@ -107,7 +108,7 @@ final class MLXServerManager: ObservableObject {
         }
     }
 
-    /// 安装 Python 环境与 mlx-vlm 依赖（幂等，已安装则跳过）
+    /// 安装 Python 环境与依赖（幂等；venv 已存在时增量 pip 安装，不重建环境）
     func install(settings: AppSettings) async throws {
         if isInstalled { return }
 
@@ -116,23 +117,25 @@ final class MLXServerManager: ObservableObject {
         let pythonCheck = try? await runCommand("/usr/bin/env", ["python3", "--version"])
         guard pythonCheck == 0 else { throw MLXSetupError.pythonMissing }
 
-        state = .installing("创建虚拟环境")
-        appendLog("[setup] 创建 venv：\(venvDir.path)\n")
-        if fm.fileExists(atPath: venvDir.path) {
-            try? fm.removeItem(at: venvDir)
+        if !fm.fileExists(atPath: venvPython.path) {
+            state = .installing("创建虚拟环境")
+            appendLog("[setup] 创建 venv：\(venvDir.path)\n")
+            if fm.fileExists(atPath: venvDir.path) {
+                try? fm.removeItem(at: venvDir)
+            }
+            let venvStatus = try await runCommand("/usr/bin/env", ["python3", "-m", "venv", venvDir.path])
+            guard venvStatus == 0 else { throw MLXSetupError.commandFailed("python3 -m venv", venvStatus) }
         }
-        let venvStatus = try await runCommand("/usr/bin/env", ["python3", "-m", "venv", venvDir.path])
-        guard venvStatus == 0 else { throw MLXSetupError.commandFailed("python3 -m venv", venvStatus) }
 
-        state = .installing("安装 mlx-vlm（约 300MB 依赖）")
+        state = .installing("安装依赖（mlx-vlm / pymupdf / python-docx）")
         // 国内镜像加速 pip
-        var pipArgs = ["-m", "pip", "install", "-U", Self.depsSpec]
+        var pipArgs = ["-m", "pip", "install", "-U"] + Self.pipPackages
         if settings.hfMirror {
             pipArgs += ["-i", "https://pypi.tuna.tsinghua.edu.cn/simple"]
         }
-        appendLog("[setup] pip install \(Self.depsSpec)\n")
+        appendLog("[setup] pip install \(Self.pipPackages.joined(separator: " "))\n")
         let pipStatus = try await runCommand(venvPython.path, pipArgs)
-        guard pipStatus == 0 else { throw MLXSetupError.commandFailed("pip install mlx-vlm", pipStatus) }
+        guard pipStatus == 0 else { throw MLXSetupError.commandFailed("pip install", pipStatus) }
 
         try Self.depsSpec.write(to: depsMarkerURL, atomically: true, encoding: .utf8)
         appendLog("[setup] 依赖安装完成\n")

@@ -1,14 +1,13 @@
 import Foundation
 import Combine
 
-/// 应用中枢：持有设置、任务列表、局域网服务、聊天状态。
+/// 应用中枢：设置、任务队列、文档库、局域网服务、聊天状态。
 @MainActor
 final class AppState: ObservableObject {
     let settingsStore: SettingsStore
     let mlxManager: MLXServerManager
-
-    // OCR / 解析任务
-    @Published private(set) var tasks: [DocumentTask] = []
+    let store: DocumentStore
+    let taskQueue: TaskQueue
 
     // 局域网服务
     @Published private(set) var isServerRunning = false
@@ -23,14 +22,15 @@ final class AppState: ObservableObject {
     @Published var pendingChatDraft: String?
 
     private var server: LocalHTTPServer?
-    private lazy var router = WebAPIRouter(settingsProvider: { [settingsStore] in
-        settingsStore.settings
-    })
+    private lazy var router = WebAPIRouter(appState: self)
 
     init() {
         let store = SettingsStore()
         self.settingsStore = store
         self.mlxManager = MLXServerManager()
+        let docStore = DocumentStore()
+        self.store = docStore
+        self.taskQueue = TaskQueue(store: docStore, settingsStore: store)
     }
 
     var settings: AppSettings { settingsStore.settings }
@@ -42,67 +42,39 @@ final class AppState: ObservableObject {
                           preferPDFTextLayer: settings.preferPDFTextLayer)
     }
 
-    // MARK: - OCR / 文档识别
+    // MARK: - 文件入队（App 拖入/选择）
 
-    func processFiles(_ urls: [URL]) {
-        for url in urls {
-            let task = DocumentTask(fileURL: url)
-            guard task.kind != .unknown else {
-                var failed = task
-                failed.status = .failed("不支持的文件类型")
-                tasks.insert(failed, at: 0)
-                continue
-            }
-            tasks.insert(task, at: 0)
-            let taskID = task.id
-
-            Task { [weak self] in
-                guard let self else { return }
-                self.updateTask(taskID) { $0.status = .processing(progress: 0, message: "准备中…") }
-                do {
-                    let processor = self.makeProcessor()
-                    // 强引用 self（let 常量）：@Sendable 闭包不能引用 weak var
-                    let result = try await processor.process(url: url, kind: task.kind) { p, msg in
-                        Task { @MainActor in
-                            self.updateTask(taskID) { $0.status = .processing(progress: p, message: msg) }
-                        }
-                    }
-                    self.updateTask(taskID) {
-                        $0.status = .done
-                        $0.resultText = result.text
-                        $0.engine = result.engine
-                        $0.pageCount = result.pageCount
-                    }
-                } catch {
-                    self.updateTask(taskID) { $0.status = .failed(error.readableMessage) }
+    /// 入队 OCR，返回任务 ID 列表（入库失败的文件生成失败任务记录便于用户感知）
+    @discardableResult
+    func processFiles(_ urls: [URL]) -> [UUID?] {
+        urls.map { url in
+            do {
+                return try taskQueue.enqueueOCR(fileURL: url)
+            } catch {
+                if let task = try? store.createTask(kind: .ocr, documentID: nil, fileName: url.lastPathComponent) {
+                    try? store.updateTask(task.id, state: .failed, error: error.readableMessage)
+                    taskQueue.refresh()
+                    return task.id
                 }
+                return nil
             }
         }
     }
 
-    func removeTask(_ id: UUID) {
-        tasks.removeAll { $0.id == id }
-    }
-
-    func clearFinishedTasks() {
-        tasks.removeAll { !$0.status.isRunning }
-    }
-
-    private func updateTask(_ id: UUID, _ mutate: (inout DocumentTask) -> Void) {
-        guard let index = tasks.firstIndex(where: { $0.id == id }) else { return }
-        mutate(&tasks[index])
-    }
-
-    // MARK: - PDF 转 Word
-
-    func convertPDFToWord(url: URL,
-                          progress: @escaping (Double, String) -> Void) async throws -> Data {
-        let processor = makeProcessor()
-        let service = PDFToWordService(processor: processor)
-        let (data, _, _) = try await service.convert(pdfURL: url) { p, msg in
-            Task { @MainActor in progress(p, msg) }
+    @discardableResult
+    func enqueueConversion(_ urls: [URL]) -> [UUID?] {
+        urls.map { url in
+            do {
+                return try taskQueue.enqueueConvert(fileURL: url)
+            } catch {
+                if let task = try? store.createTask(kind: .pdfToWord, documentID: nil, fileName: url.lastPathComponent) {
+                    try? store.updateTask(task.id, state: .failed, error: error.readableMessage)
+                    taskQueue.refresh()
+                    return task.id
+                }
+                return nil
+            }
         }
-        return data
     }
 
     // MARK: - AI 对话

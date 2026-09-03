@@ -3,6 +3,7 @@ import SwiftUI
 enum SidebarItem: String, CaseIterable, Identifiable {
     case ocr = "文字识别"
     case convert = "PDF 转 Word"
+    case library = "文档库"
     case chat = "AI 对话"
     case server = "局域网服务"
 
@@ -12,6 +13,7 @@ enum SidebarItem: String, CaseIterable, Identifiable {
         switch self {
         case .ocr: return "doc.text.viewfinder"
         case .convert: return "doc.on.doc"
+        case .library: return "books.vertical"
         case .chat: return "bubble.left.and.bubble.right"
         case .server: return "network"
         }
@@ -36,6 +38,8 @@ struct ContentView: View {
                 OCRView(sidebarSelection: $selection)
             case .convert:
                 ConvertView()
+            case .library:
+                LibraryView(sidebarSelection: $selection)
             case .chat:
                 ChatView()
             case .server:

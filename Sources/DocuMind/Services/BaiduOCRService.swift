@@ -13,6 +13,8 @@ struct OCRLine {
 struct OCRPageResult {
     let text: String
     let lines: [OCRLine]
+    /// 结构化块（本地 Unlimited-OCR grounding 模式产出；云端引擎为空）
+    var blocks: [OCRBlock] = []
 }
 
 enum BaiduOCRError: LocalizedError {

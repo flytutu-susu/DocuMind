@@ -20,6 +20,13 @@ enum FileExporter {
             alert.runModal()
         }
     }
+
+    /// 复制已有文件到用户选择的位置
+    @MainActor
+    static func saveCopy(of fileURL: URL, suggestedName: String, contentType: UTType) {
+        guard let data = try? Data(contentsOf: fileURL) else { return }
+        save(data: data, suggestedName: suggestedName, contentType: contentType)
+    }
 }
 
 extension UTType {
@@ -34,14 +41,20 @@ struct OCRView: View {
     @State private var showImporter = false
     @State private var selectedTaskID: UUID?
     @State private var isDropTargeted = false
+    @State private var resultText: String = ""
 
     private static let importTypes: [UTType] = [.pdf, .image, .docx, .xlsx]
+
+    /// OCR 类任务（转换任务在「PDF 转 Word」页展示）
+    private var ocrTasks: [TaskRecord] {
+        appState.taskQueue.tasks.filter { $0.kind == .ocr }
+    }
 
     var body: some View {
         VStack(spacing: 0) {
             toolbar
             Divider()
-            if appState.tasks.isEmpty {
+            if ocrTasks.isEmpty {
                 emptyState
             } else {
                 taskList
@@ -71,14 +84,14 @@ struct OCRView: View {
                 Label("选择文件", systemImage: "plus")
             }
 
-            Text("支持 PDF / 图片 / docx / xlsx，可直接拖拽到窗口")
+            Text("支持 PDF / 图片 / docx / xlsx，拖入即进入任务队列")
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
             Spacer()
 
-            if appState.tasks.contains(where: { !$0.status.isRunning }) {
-                Button("清空已完成") { appState.clearFinishedTasks() }
+            if ocrTasks.contains(where: { !$0.isActive }) {
+                Button("清空已完成") { clearFinished() }
                     .buttonStyle(.borderless)
                     .foregroundStyle(.secondary)
             }
@@ -97,7 +110,7 @@ struct OCRView: View {
                 .foregroundStyle(isDropTargeted ? .blue : .secondary)
             Text("拖拽文件到这里，或点击「选择文件」")
                 .foregroundStyle(.secondary)
-            Text("PDF 自动判断文本层/扫描件；docx、xlsx 直接本地解析")
+            Text("本地 Unlimited-OCR 结构化识别 · 结果自动入库到「文档库」")
                 .font(.caption)
                 .foregroundStyle(.tertiary)
             Spacer()
@@ -110,15 +123,9 @@ struct OCRView: View {
 
     private var taskList: some View {
         List(selection: $selectedTaskID) {
-            ForEach(appState.tasks) { task in
+            ForEach(ocrTasks) { task in
                 TaskRow(task: task)
                     .tag(task.id)
-                    .contextMenu {
-                        Button("复制结果") { copy(task.resultText) }
-                            .disabled(task.resultText.isEmpty)
-                        Divider()
-                        Button("移除") { appState.removeTask(task.id) }
-                    }
             }
         }
         .frame(minHeight: 160, maxHeight: 260)
@@ -126,8 +133,8 @@ struct OCRView: View {
 
     // MARK: - 结果详情
 
-    private var selectedTask: DocumentTask? {
-        appState.tasks.first { $0.id == selectedTaskID } ?? appState.tasks.first(where: { !$0.resultText.isEmpty })
+    private var selectedTask: TaskRecord? {
+        ocrTasks.first { $0.id == selectedTaskID } ?? ocrTasks.first(where: { $0.state == .success })
     }
 
     private var detailPanel: some View {
@@ -136,19 +143,19 @@ struct OCRView: View {
                 HStack {
                     VStack(alignment: .leading, spacing: 2) {
                         Text(task.fileName).font(.headline).lineLimit(1)
-                        Text("\(task.kind.displayName) · \(task.engine.isEmpty ? task.status.shortDescription : task.engine)")
+                        Text("\(task.kind.displayName) · \(task.engine.isEmpty ? task.message : task.engine)")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
                     Spacer()
-                    if !task.resultText.isEmpty {
-                        Button { copy(task.resultText) } label: { Label("复制", systemImage: "doc.on.clipboard") }
+                    if !resultText.isEmpty {
+                        Button { copy(resultText) } label: { Label("复制", systemImage: "doc.on.clipboard") }
                         Button {
                             let name = (task.fileName as NSString).deletingPathExtension + ".txt"
-                            FileExporter.save(data: Data(task.resultText.utf8), suggestedName: name, contentType: .plainText)
+                            FileExporter.save(data: Data(resultText.utf8), suggestedName: name, contentType: .plainText)
                         } label: { Label("导出", systemImage: "square.and.arrow.up") }
                         Button {
-                            appState.pendingChatDraft = "以下是文档「\(task.fileName)」识别出的内容，请阅读并等待我的问题：\n\n" + task.resultText
+                            appState.pendingChatDraft = "以下是文档「\(task.fileName)」识别出的内容，请阅读并等待我的问题：\n\n" + resultText
                             sidebarSelection = .chat
                         } label: { Label("发到对话", systemImage: "bubble.left") }
                     }
@@ -159,11 +166,17 @@ struct OCRView: View {
                 Divider()
 
                 ScrollView {
-                    Text(task.resultText.isEmpty ? placeholder(for: task) : task.resultText)
+                    Text(displayText(for: task))
                         .font(.body)
                         .textSelection(.enabled)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding()
+                }
+                // 任务更新（完成/进度变化）时重新加载结果文本
+                .task(id: task.updatedAt) {
+                    if task.state == .success {
+                        resultText = appState.taskQueue.resultText(for: task) ?? ""
+                    }
                 }
             } else {
                 Text("在上方选择一个任务查看识别结果")
@@ -174,17 +187,23 @@ struct OCRView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
-    private func placeholder(for task: DocumentTask) -> String {
-        switch task.status {
-        case .failed(let err): return "❌ \(err)"
-        case .processing(_, let msg): return "处理中…\(msg)"
-        default: return ""
+    private func displayText(for task: TaskRecord) -> String {
+        switch task.state {
+        case .failed: return "❌ \(task.error ?? "未知错误")"
+        case .running: return "处理中…\(task.message)"
+        case .pending: return "排队中…"
+        case .success: return resultText.isEmpty ? "（无文本结果）" : resultText
         }
     }
 
     private func copy(_ text: String) {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(text, forType: .string)
+    }
+
+    private func clearFinished() {
+        // 目前仅清除视图选择；任务记录保留在库中供文档库/追溯使用
+        selectedTaskID = nil
     }
 
     // MARK: - 拖拽
@@ -214,7 +233,7 @@ struct OCRView: View {
 // MARK: - 任务行
 
 private struct TaskRow: View {
-    let task: DocumentTask
+    let task: TaskRecord
 
     var body: some View {
         HStack(spacing: 10) {
@@ -223,11 +242,11 @@ private struct TaskRow: View {
                 .frame(width: 20)
             VStack(alignment: .leading, spacing: 3) {
                 Text(task.fileName).lineLimit(1)
-                if case .processing(let progress, let message) = task.status {
+                if task.state == .running {
                     HStack(spacing: 8) {
-                        ProgressView(value: progress)
+                        ProgressView(value: task.progress)
                             .frame(width: 120)
-                        Text(message).font(.caption).foregroundStyle(.secondary)
+                        Text(task.message).font(.caption).foregroundStyle(.secondary)
                     }
                 } else {
                     Text(statusText).font(.caption).foregroundStyle(.secondary)
@@ -239,26 +258,28 @@ private struct TaskRow: View {
     }
 
     private var icon: String {
-        switch task.status {
+        switch task.state {
         case .pending: return "clock"
-        case .processing: return "arrow.triangle.2.circlepath"
-        case .done: return "checkmark.circle.fill"
+        case .running: return "arrow.triangle.2.circlepath"
+        case .success: return "checkmark.circle.fill"
         case .failed: return "exclamationmark.triangle.fill"
         }
     }
 
     private var color: Color {
-        switch task.status {
-        case .done: return .green
+        switch task.state {
+        case .success: return .green
         case .failed: return .red
         default: return .secondary
         }
     }
 
     private var statusText: String {
-        switch task.status {
-        case .done: return "\(task.engine) · \(task.resultText.count) 字"
-        default: return task.status.shortDescription
+        switch task.state {
+        case .success: return task.engine.isEmpty ? "完成" : task.engine
+        case .failed: return "失败：\(task.error ?? "")"
+        case .pending: return "排队中"
+        case .running: return task.message
         }
     }
 }

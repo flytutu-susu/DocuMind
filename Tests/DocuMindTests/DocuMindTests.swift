@@ -52,4 +52,52 @@ final class DocuMindTests: XCTestCase {
         XCTAssertEqual(DocumentKind(fileExtension: "xlsx"), .xlsx)
         XCTAssertEqual(DocumentKind(fileExtension: "txt"), .unknown)
     }
+
+    /// SQLite 封装：建表/插入/查询/NULL 处理
+    func testDatabaseBasics() throws {
+        let db = try Database(path: ":memory:")
+        try db.exec("CREATE TABLE t(id TEXT PRIMARY KEY, n INTEGER, r REAL, s TEXT)")
+        try db.run("INSERT INTO t VALUES(?,?,?,?)", ["a1", 42, 3.5, "你好"])
+        try db.run("INSERT INTO t VALUES(?,?,?,?)", ["a2", nil, nil, nil])
+        let rows = try db.fetch("SELECT * FROM t ORDER BY n DESC")
+        XCTAssertEqual(rows.count, 2)
+        XCTAssertEqual(rows[0].string("id"), "a1")
+        XCTAssertEqual(rows[0].int("n"), 42)
+        XCTAssertEqual(rows[0].double("r"), 3.5, accuracy: 0.001)
+        XCTAssertEqual(rows[0].string("s"), "你好")
+        XCTAssertNil(rows[1].string("s"))   // NULL 读出为 nil
+    }
+
+    /// 文档库：入库（复制文件）→ 任务状态流转 → OCR 结果存取（含结构化块）
+    func testDocumentStoreFlow() throws {
+        let store = DocumentStore()
+        let src = FileManager.default.temporaryDirectory
+            .appendingPathComponent("store-test-\(UUID().uuidString).txt")
+        try "测试内容".write(to: src, atomically: true, encoding: .utf8)
+        defer { try? FileManager.default.removeItem(at: src) }
+
+        let doc = try store.createDocument(name: "测试文档.txt", kind: .image, sourceFile: src)
+        let versionURL = try store.latestVersionURL(of: doc.id)
+        XCTAssertNotNil(versionURL)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: versionURL!.path))
+        XCTAssertEqual(try String(contentsOf: versionURL!, encoding: .utf8), "测试内容")
+
+        let task = try store.createTask(kind: .ocr, documentID: doc.id, fileName: doc.name)
+        XCTAssertEqual(task.state, .pending)
+        try store.updateTask(task.id, state: .running, progress: 0.5, message: "处理中")
+        try store.updateTask(task.id, state: .success, progress: 1.0, message: "完成", engine: "本地 Unlimited-OCR")
+        let updated = try store.task(task.id)
+        XCTAssertEqual(updated?.state, .success)
+        XCTAssertEqual(updated?.engine, "本地 Unlimited-OCR")
+
+        let blocks = [OCRBlock(category: "title", bbox: [0.1, 0.1, 0.9, 0.2], content: "标题", page: 0)]
+        try store.saveOCRResult(documentID: doc.id, engine: "本地 Unlimited-OCR", mode: "markdown",
+                                text: "识别文本", blocks: blocks, pageCount: 1)
+        let result = try store.latestOCRResult(of: doc.id)
+        XCTAssertEqual(result?.text, "识别文本")
+        XCTAssertTrue(result?.blocksJSON.contains("title") ?? false)
+
+        XCTAssertTrue(try store.listDocuments().contains(where: { $0.id == doc.id }))
+        XCTAssertTrue(try store.listTasks().contains(where: { $0.id == task.id }))
+    }
 }

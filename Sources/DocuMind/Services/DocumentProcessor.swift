@@ -6,6 +6,8 @@ struct ProcessedDocument {
     let text: String
     let engine: String
     let pageCount: Int
+    /// 结构化块（本地引擎 grounding 模式产出，含 bbox/类别/页码）
+    var blocks: [OCRBlock] = []
 }
 
 enum DocumentProcessError: LocalizedError {
@@ -61,9 +63,11 @@ final class DocumentProcessor {
 
         case .image:
             progress(0.2, "识别图片…")
-            let text = try await ocrImage(url: url)
+            let result = try await ocrImage(url: url)
             progress(1.0, "完成")
-            return ProcessedDocument(text: text, engine: ocrEngine?.engineDisplayName ?? "OCR", pageCount: 1)
+            return ProcessedDocument(text: result.text,
+                                     engine: ocrEngine?.engineDisplayName ?? "OCR",
+                                     pageCount: 1, blocks: result.blocks)
 
         case .pdf:
             return try await processPDF(url: url, progress: progress)
@@ -105,6 +109,7 @@ final class DocumentProcessor {
         guard let ocr = ocrEngine else { throw DocumentProcessError.ocrUnavailable }
         let pagesToOCR = min(pageCount, maxOCRPages)
         var texts: [String] = []
+        var allBlocks: [OCRBlock] = []
         for i in 0..<pagesToOCR {
             try Task.checkCancellation()
             progress(Double(i) / Double(pagesToOCR), "OCR 第 \(i + 1)/\(pagesToOCR) 页…")
@@ -112,6 +117,10 @@ final class DocumentProcessor {
             let imageData = try Self.renderPageToJPEG(page)
             let result = try await ocr.recognize(imageData: imageData)
             texts.append("----- 第 \(i + 1) 页 -----\n\(result.text)")
+            // 单图调用的 page 恒为 0，这里改写为真实页码
+            allBlocks.append(contentsOf: result.blocks.map {
+                OCRBlock(category: $0.category, bbox: $0.bbox, content: $0.content, page: i)
+            })
         }
         if pageCount > pagesToOCR {
             texts.append("（注：共 \(pageCount) 页，仅识别前 \(pagesToOCR) 页）")
@@ -121,19 +130,20 @@ final class DocumentProcessor {
             throw DocumentProcessError.emptyResult
         }
         progress(1.0, "完成")
-        return ProcessedDocument(text: text, engine: "\(ocr.engineDisplayName)（扫描版PDF）", pageCount: pagesToOCR)
+        return ProcessedDocument(text: text, engine: "\(ocr.engineDisplayName)（扫描版PDF）",
+                                 pageCount: pagesToOCR, blocks: allBlocks)
     }
 
     // MARK: - 图片 OCR
 
-    private func ocrImage(url: URL) async throws -> String {
+    private func ocrImage(url: URL) async throws -> OCRPageResult {
         guard let ocr = ocrEngine else { throw DocumentProcessError.ocrUnavailable }
         let data = try Data(contentsOf: url)
         let result = try await ocr.recognize(imageData: data)
         guard !result.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw DocumentProcessError.emptyResult
         }
-        return result.text
+        return result
     }
 
     // MARK: - PDF 页面渲染
