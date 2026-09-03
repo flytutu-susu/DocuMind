@@ -20,10 +20,13 @@ jobs:
           swift --version
           sw_vers
 
-      - name: Configure git for SPM dependency fetch
-        # runner 的钥匙串里可能有失效凭据导致匿名 clone 公共仓库返回 401，
-        # 用 GITHUB_TOKEN 显式重写 github.com 的 https 访问
-        run: git config --global url."https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/".insteadOf "https://github.com/"
+      - name: Fix git auth for SPM dependency fetch
+        # macOS runner 的全局 git 配置挂了 osxkeychain，其中残留失效的 github.com 凭据，
+        # 导致匿名 clone 公共依赖返回 401；清空 helper 并擦除钥匙串条目，恢复匿名访问
+        run: |
+          git config --global --unset-all credential.helper || true
+          git config --global credential.helper ""
+          printf "protocol=https\nhost=github.com\n\n" | git credential-osxkeychain erase || true
 
       - name: Resolve Swift packages
         run: swift package resolve
