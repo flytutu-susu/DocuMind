@@ -107,12 +107,14 @@ actor BaiduOCRService {
     // MARK: - 图片识别
 
     /// 识别一张图片（JPEG/PNG Data），自动压缩到接口限制内，token 失效自动重试一次。
+    /// 含位置版接口（general/accurate）会额外合成 OCRBlock（行级 bbox 归一化）。
     func recognize(imageData: Data) async throws -> OCRPageResult {
         let prepared = try ImageCompressor.prepareForBaidu(imageData)
-        return try await recognizePrepared(imageData: prepared, allowRetry: true)
+        let imageSize = ImageCompressor.dimensions(of: prepared)
+        return try await recognizePrepared(imageData: prepared, imageSize: imageSize, allowRetry: true)
     }
 
-    private func recognizePrepared(imageData: Data, allowRetry: Bool) async throws -> OCRPageResult {
+    private func recognizePrepared(imageData: Data, imageSize: CGSize?, allowRetry: Bool) async throws -> OCRPageResult {
         let token = try await accessToken()
         let url = URL(string: "https://aip.baidubce.com/rest/2.0/ocr/v1/\(endpoint.rawValue)?access_token=\(token)")!
 
@@ -143,7 +145,7 @@ actor BaiduOCRService {
             // token 失效，强制刷新后重试一次
             if (errorCode == 110 || errorCode == 111), allowRetry {
                 _ = try await accessToken(forceRefresh: true)
-                return try await recognizePrepared(imageData: imageData, allowRetry: false)
+                return try await recognizePrepared(imageData: imageData, imageSize: imageSize, allowRetry: false)
             }
             if errorCode == 4 || errorCode == 6 || errorCode == 17 {
                 throw BaiduOCRError.quotaExceeded
@@ -151,12 +153,12 @@ actor BaiduOCRService {
             throw BaiduOCRError.apiError(code: errorCode, message: message)
         }
 
-        return try parseWordsResult(json)
+        return try parseWordsResult(json, imageSize: imageSize)
     }
 
     // MARK: - 结果解析
 
-    private func parseWordsResult(_ json: [String: Any]) throws -> OCRPageResult {
+    private func parseWordsResult(_ json: [String: Any], imageSize: CGSize?) throws -> OCRPageResult {
         guard let wordsResult = json["words_result"] as? [[String: Any]] else {
             throw BaiduOCRError.badResponse("缺少 words_result 字段")
         }
@@ -173,21 +175,38 @@ actor BaiduOCRService {
         }
 
         // paragraph=true 时按 paragraphs_result 合并段落
+        var text: String
         if mergeParagraph, let paragraphs = json["paragraphs_result"] as? [[String: Any]] {
             var merged: [String] = []
             for p in paragraphs {
                 guard let idxs = p["words_result_idx"] as? [Int] else { continue }
-                let text = idxs.compactMap { $0 >= 0 && $0 < lines.count ? lines[$0].text : nil }.joined()
-                if !text.isEmpty { merged.append(text) }
+                let paragraphText = idxs.compactMap { $0 >= 0 && $0 < lines.count ? lines[$0].text : nil }.joined()
+                if !paragraphText.isEmpty { merged.append(paragraphText) }
             }
-            if !merged.isEmpty {
-                return OCRPageResult(text: merged.joined(separator: "\n\n"), lines: lines)
+            text = merged.isEmpty ? "" : merged.joined(separator: "\n\n")
+        } else {
+            text = lines.map { $0.text }.joined(separator: "\n")
+        }
+        if text.isEmpty {
+            text = lines.map { $0.text }.joined(separator: "\n")
+        }
+        lines = lines.filter { !$0.text.isEmpty }
+
+        // 含位置版：行级 location → 归一化 OCRBlock（供 Swift Layout Engine 使用）
+        var blocks: [OCRBlock] = []
+        if let size = imageSize, size.width > 0, size.height > 0 {
+            blocks = lines.compactMap { line in
+                guard let loc = line.location else { return nil }
+                let nb = [
+                    Double(loc.minX) / Double(size.width),
+                    Double(loc.minY) / Double(size.height),
+                    Double(loc.maxX) / Double(size.width),
+                    Double(loc.maxY) / Double(size.height)
+                ].map { min(max($0, 0), 1) }
+                return OCRBlock(category: "text", bbox: nb, content: line.text, page: 0)
             }
         }
-
-        let text = lines.map { $0.text }.joined(separator: "\n")
-        lines = lines.filter { !$0.text.isEmpty }
-        return OCRPageResult(text: text, lines: lines)
+        return OCRPageResult(text: text, lines: lines, blocks: blocks)
     }
 
     // MARK: - 工具
@@ -245,5 +264,14 @@ enum ImageCompressor {
         }
         let bitmap = NSBitmapImageRep(cgImage: cgImage)
         return bitmap.representation(using: .jpeg, properties: [.compressionFactor: quality])
+    }
+
+    /// 读取图片像素尺寸（用于把行级 location 归一化为 0-1 bbox）
+    static func dimensions(of data: Data) -> CGSize? {
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil),
+              let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+              let width = properties[kCGImagePropertyPixelWidth] as? Int,
+              let height = properties[kCGImagePropertyPixelHeight] as? Int else { return nil }
+        return CGSize(width: width, height: height)
     }
 }

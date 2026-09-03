@@ -7,7 +7,7 @@ macOS 文档智能平台（Swift + SwiftUI）：**本地 Unlimited-OCR 结构化
 | 功能 | 说明 |
 | --- | --- |
 | 文档识别 | **默认本地运行百度开源 [Unlimited-OCR](https://huggingface.co/baidu/Unlimited-OCR) 3B 模型（MLX MXFP8 量化版）**，grounding 模式输出**结构化块（标题/正文/表格/图片 + bbox 坐标）**，完全离线免费；可切换 Int8/Int4/MXFP4 档位；支持 PDF（文字版自动走文本层）、图片、docx、xlsx。也可切换为百度智能云 OCR（标准/高精度/无限制套餐） |
-| PDF 转 Word（版面保持） | **纯 Swift Layout Engine**（`Services/Layout/`）：PDF → grounding OCR（结构化块 `{category,bbox,content,page}`）→ `LayoutAnalyzer`（类别映射/标题级别推断/markdown 表格解析）→ `DocxLayoutBuilder`（OOXML：Heading 样式、真表格 w:tbl、插图 bbox 裁剪内联嵌入、分页符）。文字版 PDF 走文本层直出快路径 |
+| PDF 转 Word（版面保持） | **`PDFToWordService` 统一入口：所有引擎走 blocks → layout → docx**。文字版 PDF 文本层直出；扫描件由本地 Unlimited-OCR 产出语义块（title/text/table/image+bbox），百度云自动切含位置版产出行级块（LayoutAnalyzer 按行距/对齐合并成段落）。Swift Layout Engine（`Services/Layout/`）：Heading 大纲样式、真表格 w:tbl、插图 bbox 裁剪内联嵌入、逐页分页 |
 | 任务队列 | **Worker Pool 调度**：OCR（推理）/ Convert（转换）/ Parse（本地解析）三条独立流水线并行分发，任务持久化 SQLite（pending/running/success/failed），Web/App 提交即返回 task_id；长 PDF 转换不阻塞图片识别入队 |
 | 文档库 | 所有处理文件自动入库：`documents` / `document_versions` / `ocr_results` / `tasks` 四表，文件存于 `~/Library/Application Support/DocuMind/library/`，App 与 Web 均可检索、查看、导出 |
 | 局域网 Web | 内置零依赖 HTTP 服务（Network.framework），局域网设备浏览器打开 `http://<Mac的IP>:8080` 即可使用全部功能 |
@@ -37,31 +37,32 @@ open dist/DocuMind.app
 
 1. **OCR（本地引擎，推荐）**：打开 App → `⌘,` → 「OCR 引擎」→ 点「安装环境并启动」。App 会自动：创建 venv → 安装依赖 → 下载模型 → 启动推理服务（仅监听 127.0.0.1）。日志面板可见下载进度，就绪后状态变绿。
    - 模型默认 [mlx-community/Unlimited-OCR-mxfp8](https://huggingface.co/mlx-community/Unlimited-OCR-mxfp8)（config 原生修复版）；可切换 [sahilchachra 量化系列](https://huggingface.co/sahilchachra) 的 MXFP8 / Int8 / Int4 / MXFP4
-2. **OCR（百度云，可选）**：引擎切换为「百度智能云 OCR」，填入[控制台](https://console.bce.baidu.com/ai-engine/ocr/overview/index)创建的 API Key / Secret Key 即可（云端引擎仅纯文本，无版面保持）。
+2. **OCR（百度云，可选）**：引擎切换为「百度智能云 OCR」，填入[控制台](https://console.bce.baidu.com/ai-engine/ocr/overview/index)创建的 API Key / Secret Key 即可。PDF 转 Word 时自动升级使用含位置版接口，按行级坐标重建段落版面（无表格/图片语义，完整语义版面请用本地引擎）。
 3. **大模型**：设置 → 大模型 → 添加预设（DeepSeek / Kimi / 千问 / OpenAI / Anthropic 已内置 Base URL 与默认模型），填入 API Key。
 4. **局域网服务**：「局域网服务」页点「启动服务」，手机/其他电脑浏览器访问列表地址。
 
-## 核心管线：版面保持的 PDF → Word（纯 Swift Layout Engine）
+## 核心管线：PDF → Word（PDFToWordService 统一入口）
 
 ```
-PDF 页面（PDFKit 渲染 2x）
+PDFToWordService.convert()
    │
-   ▼  Unlimited-OCR grounding（本地 sidecar）
-[OCRBlock]  {category: title|text|table|image, bbox(归一化), content, page}
+   ├─ 文字版 PDF → PDFKit 文本层直出 → DocxBuilder（简单排版，零误差秒级）
    │
-   ▼  Services/Layout/LayoutAnalyzer.swift
-[LayoutElement]  heading(level 按 bbox 高度推断) / paragraph / table / image / pageBreak
-   │                                ├─ image：按 bbox 从页面渲染裁剪（CoreGraphics）
-   ▼  Services/Layout/DocxLayoutBuilder.swift（OOXML）
-   title → Heading1-3 样式（Word 大纲可识别）
-   table → 真 w:tbl（Table Grid 边框，首行加粗）
-   image → w:drawing 内联嵌入（word/media/ + 关系表，宽度自适应）
-   │
-   ▼
-output.docx
+   └─ 扫描版 PDF → blocks → layout → docx：
+        │
+        ▼ 结构化块来源（按引擎）
+        ├─ 本地 Unlimited-OCR：grounding 语义块 {title/text/table/image, bbox, page}
+        └─ 百度云（自动升级含位置版）：行级 location 合成 blocks
+        │
+        ▼  Services/Layout/LayoutAnalyzer.swift
+        类别映射 · 标题级别按 bbox 高度推断 · markdown 表格解析 · 行级块按行距合并成段落
+        │
+        ▼  Services/Layout/DocxLayoutBuilder.swift（OOXML）
+        Heading1-3 大纲样式 / 真 w:tbl 表格 / w:drawing 插图（bbox 裁剪，宽度自适应）/ 分页符
+        │
+        ▼
+   output.docx
 ```
-
-对比旧管线（PDF→纯文本→重建 docx）会丢失布局/图片/表格结构；Layout Engine 保留**语义级版面**。文字版 PDF 自动走文本层直出快路径（零误差、秒级）。
 
 ## 本地引擎架构
 
@@ -130,8 +131,8 @@ Sources/DocuMind/
 │   │   └── LayoutPDFConverter.swift# 转换编排（逐页渲染→识别→裁剪→构建，内存受控）
 │   ├── DocumentProcessor.swift # PDF/图片/docx/xlsx 统一处理管线
 │   ├── OfficeTextExtractor.swift
-│   ├── DocxBuilder.swift       # 最小 OOXML docx 生成器（云端引擎纯文本路径）
-│   ├── PDFToWordService.swift
+│   ├── DocxBuilder.swift       # 最小 OOXML docx 生成器（文本层直出快路径）
+│   ├── PDFToWordService.swift  # ★ PDF→Word 统一入口（文本层快路径 / blocks→layout→docx）
 │   └── LLM/                    # OpenAI 兼容 + Anthropic 双协议客户端（SSE）
 ├── Server/                     # 局域网 HTTP 服务 + 内嵌 Web 前端
 └── Views/                      # SwiftUI 界面（识别/转换/文档库/对话/服务/设置）

@@ -129,6 +129,39 @@ final class DocuMindTests: XCTestCase {
         guard case .image = elements[3] else { return XCTFail("第四元素应为插图") }
     }
 
+    /// 行级块合并（云端含位置版场景）：相邻行应合并为段落，错位/远距行不合并
+    func testLayoutAnalyzerLineMerging() {
+        let analyzer = LayoutAnalyzer()
+        // 连续三行同一段落（行高 0.02，行距 0.005），然后一个大间距行，再一个错位行
+        let blocks = [
+            OCRBlock(category: "text", bbox: [0.1, 0.10, 0.9, 0.12], content: "第一行文字", page: 0),
+            OCRBlock(category: "text", bbox: [0.1, 0.125, 0.9, 0.145], content: "第二行文字", page: 0),
+            OCRBlock(category: "text", bbox: [0.1, 0.15, 0.5, 0.17], content: "第三行", page: 0),
+            OCRBlock(category: "text", bbox: [0.1, 0.30, 0.9, 0.32], content: "新段落的开始", page: 0),   // 大间距 → 新段
+            OCRBlock(category: "text", bbox: [0.5, 0.325, 0.9, 0.345], content: "错位行", page: 0),      // 左缘错位 → 不合并
+            OCRBlock(category: "title", bbox: [0.1, 0.5, 0.9, 0.55], content: "章节标题", page: 0)       // 非 text → 不打断语义
+        ]
+        let elements = analyzer.elements(for: blocks, page: 0)
+        // 期望：段落(三行合并) + 段落(新段落) + 段落(错位行) + 标题
+        XCTAssertEqual(elements.count, 4)
+        guard case .paragraph(let merged) = elements[0] else { return XCTFail("应为段落") }
+        XCTAssertTrue(merged.contains("第一行文字"))
+        XCTAssertTrue(merged.contains("第三行"))
+        guard case .heading = elements[3] else { return XCTFail("末元素应为标题") }
+    }
+
+    /// 英文跨行合并时补空格
+    func testLayoutAnalyzerLineMergingLatinSpace() {
+        let analyzer = LayoutAnalyzer()
+        let blocks = [
+            OCRBlock(category: "text", bbox: [0.1, 0.10, 0.9, 0.12], content: "Hello", page: 0),
+            OCRBlock(category: "text", bbox: [0.1, 0.125, 0.9, 0.145], content: "World", page: 0)
+        ]
+        let elements = analyzer.elements(for: blocks, page: 0)
+        guard case .paragraph(let merged) = elements.first else { return XCTFail("应为段落") }
+        XCTAssertEqual(merged, "Hello World")
+    }
+
     /// 版面化 DOCX：标题样式 + 真表格 + 内联插图 + 分页，且可被回读
     func testDocxLayoutBuilder() throws {
         // 1x1 红点 PNG

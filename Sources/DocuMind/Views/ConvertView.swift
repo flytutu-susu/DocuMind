@@ -60,7 +60,7 @@ struct ConvertView: View {
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
             if appState.settings.ocrEngine != .localMLX {
-                Text("⚠️ 当前为百度云引擎（纯文本转换）。切到本地引擎可获得版面保持能力。")
+                Text("ℹ️ 当前为百度云引擎：走含位置版行级版面重建（无表格/图片语义）。\n本地 Unlimited-OCR 引擎可获得完整语义版面（标题/表格/插图）。")
                     .font(.caption)
                     .foregroundStyle(.orange)
             }

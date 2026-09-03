@@ -14,8 +14,9 @@ struct LayoutAnalyzer {
 
     /// 分析单页 blocks，产出该页的版面元素序列（不含分页符，由调用方插入）
     func elements(for blocks: [OCRBlock], page: Int) -> [LayoutElement] {
+        let merged = mergeLineBlocks(blocks)
         var elements: [LayoutElement] = []
-        for block in blocks {
+        for block in merged {
             let content = block.content.trimmingCharacters(in: .whitespacesAndNewlines)
             switch block.category {
             case "title":
@@ -43,6 +44,41 @@ struct LayoutAnalyzer {
             }
         }
         return elements
+    }
+
+    // MARK: - 行级块合并（云端含位置版 OCR 的逐行输出 → 段落）
+
+    /// 把同页连续的行级 text 块按垂直间距合并成段落。
+    /// 合并条件：同页 + 都是 text + 都有 bbox + 左边缘对齐 + 行间距 < 1.8 倍行高。
+    /// 本地 Unlimited-OCR 的块已是段落级（bbox 很高，行距测试自然不通过），不受影响。
+    func mergeLineBlocks(_ blocks: [OCRBlock]) -> [OCRBlock] {
+        var result: [OCRBlock] = []
+        for block in blocks {
+            guard let last = result.last,
+                  last.category == "text", block.category == "text",
+                  last.page == block.page,
+                  last.bbox.count == 4, block.bbox.count == 4 else {
+                result.append(block)
+                continue
+            }
+            let lineHeight = last.bbox[3] - last.bbox[1]
+            let gap = block.bbox[1] - last.bbox[3]
+            let leftAligned = abs(last.bbox[0] - block.bbox[0]) < 0.05
+            let xOverlap = last.bbox[0] < block.bbox[2] && block.bbox[0] < last.bbox[2]
+            guard lineHeight > 0, gap > -0.5 * lineHeight, gap < 1.8 * lineHeight,
+                  leftAligned, xOverlap else {
+                result.append(block)
+                continue
+            }
+            // 合并：CJK 相邻直接拼接，拉丁系补空格
+            let needSpace = (last.content.last?.isCJK == false) && (block.content.first?.isCJK == false)
+            let mergedContent = last.content + (needSpace ? " " : "") + block.content
+            let mergedBBox = [min(last.bbox[0], block.bbox[0]), last.bbox[1],
+                              max(last.bbox[2], block.bbox[2]), block.bbox[3]]
+            result[result.count - 1] = OCRBlock(category: "text", bbox: mergedBBox,
+                                                content: mergedContent, page: last.page)
+        }
+        return result
     }
 
     // MARK: - 标题级别推断
@@ -80,6 +116,18 @@ struct LayoutAnalyzer {
         let cols = maxCols
         return rows.map { row in
             row.count == cols ? row : row + Array(repeating: "", count: cols - row.count)
+        }
+    }
+}
+
+private extension Character {
+    /// 是否为 CJK 字符（中日韩统一表意文字及全角标点范围）
+    var isCJK: Bool {
+        unicodeScalars.contains { scalar in
+            (0x4E00...0x9FFF).contains(scalar.value) ||   // CJK 统一表意
+            (0x3400...0x4DBF).contains(scalar.value) ||   // 扩展 A
+            (0x3000...0x303F).contains(scalar.value) ||   // CJK 标点
+            (0xFF00...0xFFEF).contains(scalar.value)      // 全角字符
         }
     }
 }

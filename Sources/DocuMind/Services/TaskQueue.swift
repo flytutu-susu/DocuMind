@@ -167,42 +167,21 @@ final class TaskQueue: ObservableObject {
               let fileURL = try store.latestVersionURL(of: docID) else {
             throw DocumentProcessError.cannotOpenPDF
         }
-        let settings = settingsStore.settings
         let taskID = task.id
         let outName = (task.fileName as NSString).deletingPathExtension + ".docx"
         let outDir = store.rootDir.appendingPathComponent("conversions", isDirectory: true)
         try FileManager.default.createDirectory(at: outDir, withIntermediateDirectories: true)
         let outURL = outDir.appendingPathComponent("\(taskID.uuidString).docx")
 
-        let data: Data
-        let engineName: String
-        if settings.ocrEngine == .localMLX {
-            // 版面保持转换（纯 Swift Layout Engine）：
-            // PDF → grounding blocks → LayoutAnalyzer → DocxLayoutBuilder
-            guard let engine = OCREngineFactory.make(settings: settings) else {
-                throw DocumentProcessError.ocrUnavailable
-            }
-            let converter = LayoutPDFConverter(engine: engine)
-            let result = try await converter.convert(pdfURL: fileURL) { p, msg in
-                Task { @MainActor in self.update(taskID, progress: p, message: msg) }
-            }
-            data = result.data
-            engineName = result.engine
-        } else {
-            // 云端引擎：纯文本路径（百度接口无语义块，版面能力有限）
-            let legacy = PDFToWordService(processor: DocumentProcessor(
-                ocrEngine: OCREngineFactory.make(settings: settings),
-                preferPDFTextLayer: settings.preferPDFTextLayer))
-            let (legacyData, engine, _) = try await legacy.convert(pdfURL: fileURL) { p, msg in
-                Task { @MainActor in self.update(taskID, progress: p, message: msg) }
-            }
-            data = legacyData
-            engineName = engine
+        // 统一入口：blocks → layout → docx（本地 grounding / 百度含位置版 均可产出 blocks）
+        let service = PDFToWordService(settings: settingsStore.settings)
+        let result = try await service.convert(pdfURL: fileURL) { p, msg in
+            Task { @MainActor in self.update(taskID, progress: p, message: msg) }
         }
 
-        try data.write(to: outURL)
+        try result.data.write(to: outURL)
         update(taskID, state: .success, progress: 1, message: "完成",
-               engine: engineName, outputPath: outURL.path, outputName: outName)
+               engine: result.engine, outputPath: outURL.path, outputName: outName)
     }
 
     // MARK: - 状态
