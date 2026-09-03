@@ -20,6 +20,11 @@ jobs:
           swift --version
           sw_vers
 
+      - name: Configure git for SPM dependency fetch
+        # runner 的钥匙串里可能有失效凭据导致匿名 clone 公共仓库返回 401，
+        # 用 GITHUB_TOKEN 显式重写 github.com 的 https 访问
+        run: git config --global url."https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/".insteadOf "https://github.com/"
+
       - name: Resolve Swift packages
         run: swift package resolve
 
