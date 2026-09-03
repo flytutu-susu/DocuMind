@@ -108,7 +108,7 @@ final class TaskQueue: ObservableObject {
                 try await runConvert(task)
             }
         } catch {
-            update(id, state: .failed, error: error.readableMessage, message: "失败")
+            update(id, state: .failed, message: "失败", error: error.readableMessage)
         }
     }
 

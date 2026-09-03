@@ -193,10 +193,12 @@ final class WebAPIRouter {
                 }
                 return nil
             }
-            guard let (path, name, contentType),
-                  let data = try? Data(contentsOf: URL(fileURLWithPath: path)) else {
+            guard let info,
+                  let data = try? Data(contentsOf: URL(fileURLWithPath: info.0)) else {
                 return .error(404, "产物不存在或任务未完成")
             }
+            let (path, name, contentType) = info
+            _ = path
             let encoded = name.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? "download"
             return HTTPResponse(statusCode: 200, headers: [
                 "Content-Type": contentType,
