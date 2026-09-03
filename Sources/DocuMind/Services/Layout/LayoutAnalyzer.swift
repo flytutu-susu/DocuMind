@@ -61,16 +61,18 @@ struct LayoutAnalyzer {
     static func parseMarkdownTable(_ content: String) -> [[String]]? {
         var rows: [[String]] = []
         for line in content.split(separator: "\n", omittingEmptySubsequences: true) {
-            let s = line.trimmingCharacters(in: .whitespaces)
+            var s = line.trimmingCharacters(in: .whitespaces)
             guard s.hasPrefix("|") else { continue }
-            let cells = s.dropFirst().split(separator: "|", omittingEmptySubsequences: false)
+            s.removeFirst()
+            if s.hasSuffix("|") { s.removeLast() }   // 去掉行尾 |，避免产生尾部空单元格
+            let cells = s.split(separator: "|", omittingEmptySubsequences: false)
                 .map { $0.trimmingCharacters(in: .whitespaces) }
             // 跳过分隔行 |---|---|
             let isSeparator = cells.allSatisfy { !$0.isEmpty && $0.allSatisfy { "-: ".contains($0) } }
             if isSeparator { continue }
             if !cells.isEmpty { rows.append(cells) }
         }
-        // 至少 2 行（表头+数据）且至少 2 列才认作表格
+        // 至少 2 列才认作表格
         guard rows.count >= 1, let maxCols = rows.map({ $0.count }).max(), maxCols >= 2 else {
             return nil
         }
