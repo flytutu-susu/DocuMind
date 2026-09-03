@@ -54,6 +54,38 @@ enum MLXOutputMode: String, Codable, CaseIterable, Identifiable {
     }
 }
 
+// MARK: - 本地模型版本预设
+
+struct MLXModelVariant: Identifiable, Hashable {
+    let repo: String
+    let label: String
+    let detail: String   // 体积 / 精度说明
+
+    var id: String { repo }
+
+    /// 默认模型：sahilchachra/unlimited-ocr-mxfp8-mlx
+    static let defaultRepo = "sahilchachra/unlimited-ocr-mxfp8-mlx"
+
+    /// 可切换版本（精度数据来自量化作者在 FUNSD 上的评测）
+    static let presets: [MLXModelVariant] = [
+        MLXModelVariant(repo: "sahilchachra/unlimited-ocr-mxfp8-mlx",
+                        label: "MXFP8（默认）",
+                        detail: "3.6GB · CER 1.46% · 精度最佳"),
+        MLXModelVariant(repo: "mlx-community/Unlimited-OCR-mxfp8",
+                        label: "MXFP8 · mlx-community 修复版",
+                        detail: "3.6GB · 修复 deepseekocr shim 重复乱码问题，需 mlx-vlm≥0.6"),
+        MLXModelVariant(repo: "sahilchachra/unlimited-ocr-8bit-mlx",
+                        label: "Int8",
+                        detail: "3.7GB · CER 1.57% · 均衡"),
+        MLXModelVariant(repo: "sahilchachra/unlimited-ocr-4bit-mlx",
+                        label: "Int4",
+                        detail: "2.3GB · CER 2.29% · 最小最快"),
+        MLXModelVariant(repo: "sahilchachra/unlimited-ocr-mxfp4-mlx",
+                        label: "MXFP4",
+                        detail: "2.3GB · CER 2.39%"),
+    ]
+}
+
 // MARK: - 全局设置（Codable 持久化）
 
 struct AppSettings: Codable {
@@ -70,7 +102,7 @@ struct AppSettings: Codable {
     var mergeParagraph: Bool = true
 
     // 本地 MLX 引擎
-    var mlxModelRepo: String = "sahilchachra/unlimited-ocr-4bit-mlx"
+    var mlxModelRepo: String = MLXModelVariant.defaultRepo
     var mlxPort: Int = 8091
     var mlxPromptMode: MLXOutputMode = .markdown
     var mlxAutoStart: Bool = false
@@ -101,7 +133,7 @@ struct AppSettings: Codable {
         baiduSecretKey = try c.decodeIfPresent(String.self, forKey: .baiduSecretKey) ?? ""
         baiduEndpoint = try c.decodeIfPresent(BaiduOCREndpoint.self, forKey: .baiduEndpoint) ?? .accurateBasic
         mergeParagraph = try c.decodeIfPresent(Bool.self, forKey: .mergeParagraph) ?? true
-        mlxModelRepo = try c.decodeIfPresent(String.self, forKey: .mlxModelRepo) ?? "sahilchachra/unlimited-ocr-4bit-mlx"
+        mlxModelRepo = try c.decodeIfPresent(String.self, forKey: .mlxModelRepo) ?? MLXModelVariant.defaultRepo
         mlxPort = try c.decodeIfPresent(Int.self, forKey: .mlxPort) ?? 8091
         mlxPromptMode = try c.decodeIfPresent(MLXOutputMode.self, forKey: .mlxPromptMode) ?? .markdown
         mlxAutoStart = try c.decodeIfPresent(Bool.self, forKey: .mlxAutoStart) ?? false

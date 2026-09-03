@@ -6,7 +6,7 @@ macOS 文档智能应用（Swift + SwiftUI）：**本地 Unlimited-OCR 模型识
 
 | 功能 | 说明 |
 | --- | --- |
-| 文档识别 | **默认本地运行百度开源 [Unlimited-OCR](https://huggingface.co/baidu/Unlimited-OCR) 3B 模型（MLX 4bit 量化版，~2.4GB，峰值内存 ~3.7GB）**，完全离线免费；支持 PDF（文字版自动走文本层、扫描版逐页识别）、图片、docx、xlsx。也可切换为百度智能云 OCR（标准/高精度/无限制套餐） |
+| 文档识别 | **默认本地运行百度开源 [Unlimited-OCR](https://huggingface.co/baidu/Unlimited-OCR) 3B 模型（MLX MXFP8 量化版，~3.6GB）**，完全离线免费；可在设置中一键切换 Int8 / Int4 / MXFP4 量化档位；支持 PDF（文字版自动走文本层、扫描版逐页识别）、图片、docx、xlsx。也可切换为百度智能云 OCR（标准/高精度/无限制套餐） |
 | PDF 转 Word | 提取或本地识别后排版生成标准 .docx（OOXML），支持 Markdown 版面模式 |
 | 局域网 Web | 内置零依赖 HTTP 服务（Network.framework），局域网设备浏览器打开 `http://<Mac的IP>:8080` 即可使用全部功能 |
 | 云端 LLM | OpenAI 兼容协议（**DeepSeek、Kimi、通义千问、OpenAI 及任意兼容网关**）+ **Anthropic Messages 协议**，App 内 SSE 流式输出 |
@@ -34,7 +34,7 @@ open dist/DocuMind.app
 ## 首次配置
 
 1. **OCR（本地引擎，推荐）**：打开 App → `⌘,` → 「OCR 引擎」→ 点「安装环境并启动」。App 会自动：创建 venv → 安装 mlx-vlm → 下载模型 → 启动推理服务（仅监听 127.0.0.1）。日志面板可见下载进度，就绪后状态变绿。
-   - 模型默认 [sahilchachra/unlimited-ocr-4bit-mlx](https://huggingface.co/sahilchachra/unlimited-ocr-4bit-mlx)（2.4GB）；追求更高精度可改为 [mlx-community/Unlimited-OCR-mxfp8](https://huggingface.co/mlx-community/Unlimited-OCR-mxfp8)（3.6GB，需 mlx-vlm ≥ 0.6）
+   - 模型默认 [sahilchachra/unlimited-ocr-mxfp8-mlx](https://huggingface.co/sahilchachra/unlimited-ocr-mxfp8-mlx)（3.6GB，FUNSD CER 1.46%，精度最佳）；设置里可切换 Int8（3.7GB）/ Int4（2.3GB）/ MXFP4（2.3GB）档位，或选用 [mlx-community/Unlimited-OCR-mxfp8](https://huggingface.co/mlx-community/Unlimited-OCR-mxfp8)（config 修复版，需 mlx-vlm ≥ 0.6）
    - 输出模式：纯文本更快；**Markdown 保留版面结构，转 Word 效果更好**
 2. **OCR（百度云，可选）**：引擎切换为「百度智能云 OCR」，填入[控制台](https://console.bce.baidu.com/ai-engine/ocr/overview/index)创建的 API Key / Secret Key 即可。
 3. **大模型**：设置 → 大模型 → 添加预设（DeepSeek / Kimi / 千问 / OpenAI / Anthropic 已内置 Base URL 与默认模型），填入 API Key。
@@ -46,7 +46,7 @@ App 内嵌一个 Python sidecar（`MLXServerScript.swift`），全部文件在 `
 
 ```
 App(Swift) ──HTTP 127.0.0.1:8091──> mlx_server.py (venv 内 python)
-                                        └─ mlx_vlm.load("sahilchachra/unlimited-ocr-4bit-mlx")
+                                        └─ mlx_vlm.load("sahilchachra/unlimited-ocr-mxfp8-mlx")
 POST /ocr  {image: base64, mode: text|markdown}  →  {text}
 GET  /health → {status: loading|ready|failed}
 ```
@@ -98,5 +98,5 @@ Sources/DocuMind/
 ## 参考
 
 - 模型：[baidu/Unlimited-OCR](https://huggingface.co/baidu/Unlimited-OCR)（MIT）· [论文 arXiv:2606.23050](https://arxiv.org/abs/2606.23050)
-- MLX 量化：[sahilchachra/unlimited-ocr-4bit-mlx](https://huggingface.co/sahilchachra/unlimited-ocr-4bit-mlx)（FUNSD CER 2.29%，M 系列约 200+ tok/s）
+- MLX 量化（[sahilchachra 量化系列](https://huggingface.co/sahilchachra)，FUNSD 评测）：默认 MXFP8（CER 1.46%）· Int8 1.57% · Int4 2.29% · MXFP4 2.39%
 - 运行时：[mlx-vlm](https://github.com/Blaizzy/mlx-vlm)（≥ 0.6.0）

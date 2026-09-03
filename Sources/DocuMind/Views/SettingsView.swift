@@ -58,8 +58,17 @@ struct SettingsView: View {
                     }
                 }
 
-                TextField("模型仓库", text: $settingsStore.settings.mlxModelRepo)
-                    .help("HuggingFace 仓库 ID。4bit 版约 2.4GB；也可换 mlx-community/Unlimited-OCR-mxfp8（更准，3.6GB）")
+                Picker("模型版本", selection: modelSelection) {
+                    ForEach(MLXModelVariant.presets) { variant in
+                        Text("\(variant.label)｜\(variant.detail)").tag(variant.repo)
+                    }
+                    Text("自定义（手动填写仓库 ID）").tag("custom")
+                }
+                .help("切换后点「应用配置并重启」生效；新模型首次启动会自动下载")
+
+                if modelSelection.wrappedValue == "custom" {
+                    TextField("HuggingFace 仓库 ID", text: $settingsStore.settings.mlxModelRepo)
+                }
 
                 HStack {
                     TextField("本地端口", value: $settingsStore.settings.mlxPort, format: .number)
@@ -127,6 +136,21 @@ struct SettingsView: View {
         case .installing, .starting, .loadingModel: return .orange
         default: return .gray
         }
+    }
+
+    /// 模型版本下拉绑定：预设命中时绑定仓库 ID，未命中（手动改过）归入「自定义」
+    private var modelSelection: Binding<String> {
+        Binding(
+            get: {
+                let repo = settingsStore.settings.mlxModelRepo
+                return MLXModelVariant.presets.contains(where: { $0.repo == repo }) ? repo : "custom"
+            },
+            set: { newValue in
+                if newValue != "custom" {
+                    settingsStore.settings.mlxModelRepo = newValue
+                }
+            }
+        )
     }
 
     private func reinstall() {
