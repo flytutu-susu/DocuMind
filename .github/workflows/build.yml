@@ -1,0 +1,43 @@
+name: Build macOS App
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-14   # Apple Silicon (M 系列)，与目标设备一致
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: sudo xcode-select -s /Applications/Xcode_15.4.app/Contents/Developer
+
+      - name: Toolchain info
+        run: |
+          swift --version
+          sw_vers
+
+      - name: Resolve Swift packages
+        run: swift package resolve
+
+      - name: Build (release)
+        run: swift build -c release
+
+      - name: Run tests
+        run: swift test
+
+      - name: Bundle DocuMind.app
+        run: bash scripts/build-app.sh
+
+      - name: Package app as zip
+        run: ditto -c -k --sequesterRsrc --keepParent dist/DocuMind.app dist/DocuMind-macOS.zip
+
+      - name: Upload app artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: DocuMind-macOS-app
+          path: dist/DocuMind-macOS.zip
+          retention-days: 14
