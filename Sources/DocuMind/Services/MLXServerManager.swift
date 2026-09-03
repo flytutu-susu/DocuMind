@@ -175,16 +175,18 @@ final class MLXServerManager: ObservableObject {
         let pipe = Pipe()
         process.standardOutput = pipe
         process.standardError = pipe
-        pipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
+        // 强引用 self（let）：@Sendable 闭包不能引用 weak var；
+        // 进程停止/替换时 serverProcess 置 nil，引用环随之断开（管理器本身是 App 生命周期单例）
+        pipe.fileHandleForReading.readabilityHandler = { handle in
             let data = handle.availableData
             guard !data.isEmpty, let str = String(data: data, encoding: .utf8) else { return }
-            Task { @MainActor in self?.appendLog(str) }
+            Task { @MainActor in self.appendLog(str) }
         }
 
-        process.terminationHandler = { [weak self] p in
+        process.terminationHandler = { p in
             Task { @MainActor in
                 // 用进程身份判断：restart 时旧进程的退出回调不影响新进程状态
-                guard let self, self.serverProcess === p else { return }
+                guard self.serverProcess === p else { return }
                 self.state = .failed("推理进程意外退出（code \(p.terminationStatus)），详见日志")
                 self.serverProcess = nil
             }
@@ -290,10 +292,11 @@ final class MLXServerManager: ObservableObject {
         let pipe = Pipe()
         process.standardOutput = pipe
         process.standardError = pipe
-        pipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
+        // 强引用 self：terminationHandler 中置 nil 后引用即断开
+        pipe.fileHandleForReading.readabilityHandler = { handle in
             let data = handle.availableData
             guard !data.isEmpty, let str = String(data: data, encoding: .utf8) else { return }
-            Task { @MainActor in self?.appendLog(str) }
+            Task { @MainActor in self.appendLog(str) }
         }
 
         return try await withCheckedThrowingContinuation { continuation in

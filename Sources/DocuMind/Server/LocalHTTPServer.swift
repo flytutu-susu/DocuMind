@@ -60,7 +60,8 @@ final class LocalHTTPServer: @unchecked Sendable {
 
     private var listener: NWListener?
     private let queue = DispatchQueue(label: "com.documind.httpserver")
-    private var connections: Set<NWConnection> = []
+    // NWConnection 不遵守 Hashable，用 ObjectIdentifier 做键
+    private var connections: [ObjectIdentifier: NWConnection] = [:]
     private let lock = NSLock()
 
     private(set) var isRunning = false
@@ -105,7 +106,7 @@ final class LocalHTTPServer: @unchecked Sendable {
         listener = nil
         isRunning = false
         lock.lock()
-        let conns = connections
+        let conns = connections.values
         connections.removeAll()
         lock.unlock()
         conns.forEach { $0.cancel() }
@@ -115,7 +116,7 @@ final class LocalHTTPServer: @unchecked Sendable {
 
     private func accept(_ connection: NWConnection) {
         lock.lock()
-        connections.insert(connection)
+        connections[ObjectIdentifier(connection)] = connection
         lock.unlock()
 
         connection.stateUpdateHandler = { [weak self] state in
@@ -134,7 +135,7 @@ final class LocalHTTPServer: @unchecked Sendable {
 
     private func remove(_ connection: NWConnection) {
         lock.lock()
-        connections.remove(connection)
+        connections.removeValue(forKey: ObjectIdentifier(connection))
         lock.unlock()
     }
 

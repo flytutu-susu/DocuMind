@@ -50,9 +50,7 @@ enum DocxBuilder {
         if FileManager.default.fileExists(atPath: outputURL.path) {
             try FileManager.default.removeItem(at: outputURL)
         }
-        guard let archive = Archive(url: outputURL, accessMode: .create) else {
-            throw DocxBuilderError.cannotCreateArchive
-        }
+        let archive = try Archive(url: outputURL, accessMode: .create)
 
         try addFile(archive, "[Content_Types].xml", contentTypesXML)
         try addFile(archive, "_rels/.rels", rootRelsXML)

@@ -19,9 +19,7 @@ enum OfficeTextExtractor {
     // MARK: - docx
 
     static func extractDocx(url: URL) throws -> String {
-        guard let archive = Archive(url: url, accessMode: .read) else {
-            throw OfficeExtractError.invalidPackage("不是有效的 docx（zip）文件")
-        }
+        let archive = try Archive(url: url, accessMode: .read)
         guard let entry = archive["word/document.xml"] else {
             throw OfficeExtractError.invalidPackage("缺少 word/document.xml")
         }
@@ -40,9 +38,7 @@ enum OfficeTextExtractor {
     // MARK: - xlsx
 
     static func extractXlsx(url: URL) throws -> String {
-        guard let archive = Archive(url: url, accessMode: .read) else {
-            throw OfficeExtractError.invalidPackage("不是有效的 xlsx（zip）文件")
-        }
+        let archive = try Archive(url: url, accessMode: .read)
 
         // 1. 共享字符串表
         var sharedStrings: [String] = []

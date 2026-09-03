@@ -61,9 +61,10 @@ final class AppState: ObservableObject {
                 self.updateTask(taskID) { $0.status = .processing(progress: 0, message: "准备中…") }
                 do {
                     let processor = self.makeProcessor()
-                    let result = try await processor.process(url: url, kind: task.kind) { [weak self] p, msg in
+                    // 强引用 self（let 常量）：@Sendable 闭包不能引用 weak var
+                    let result = try await processor.process(url: url, kind: task.kind) { p, msg in
                         Task { @MainActor in
-                            self?.updateTask(taskID) { $0.status = .processing(progress: p, message: msg) }
+                            self.updateTask(taskID) { $0.status = .processing(progress: p, message: msg) }
                         }
                     }
                     self.updateTask(taskID) {
