@@ -34,7 +34,7 @@ open dist/DocuMind.app
 ## 首次配置
 
 1. **OCR（本地引擎，推荐）**：打开 App → `⌘,` → 「OCR 引擎」→ 点「安装环境并启动」。App 会自动：创建 venv → 安装 mlx-vlm → 下载模型 → 启动推理服务（仅监听 127.0.0.1）。日志面板可见下载进度，就绪后状态变绿。
-   - 模型默认 [sahilchachra/unlimited-ocr-mxfp8-mlx](https://huggingface.co/sahilchachra/unlimited-ocr-mxfp8-mlx)（3.6GB，FUNSD CER 1.46%，精度最佳）；设置里可切换 Int8（3.7GB）/ Int4（2.3GB）/ MXFP4（2.3GB）档位，或选用 [mlx-community/Unlimited-OCR-mxfp8](https://huggingface.co/mlx-community/Unlimited-OCR-mxfp8)（config 修复版，需 mlx-vlm ≥ 0.6）
+   - 模型默认 [mlx-community/Unlimited-OCR-mxfp8](https://huggingface.co/mlx-community/Unlimited-OCR-mxfp8)（3.6GB，FUNSD CER 1.46%，config 原生修复版，避免旧 shim 的重复乱码问题）；设置里可切换 [sahilchachra 量化系列](https://huggingface.co/sahilchachra) 的 MXFP8 / Int8（3.7GB）/ Int4（2.3GB）/ MXFP4（2.3GB）档位
    - 输出模式：纯文本更快；**Markdown 保留版面结构，转 Word 效果更好**
 2. **OCR（百度云，可选）**：引擎切换为「百度智能云 OCR」，填入[控制台](https://console.bce.baidu.com/ai-engine/ocr/overview/index)创建的 API Key / Secret Key 即可。
 3. **大模型**：设置 → 大模型 → 添加预设（DeepSeek / Kimi / 千问 / OpenAI / Anthropic 已内置 Base URL 与默认模型），填入 API Key。
@@ -46,7 +46,7 @@ App 内嵌一个 Python sidecar（`MLXServerScript.swift`），全部文件在 `
 
 ```
 App(Swift) ──HTTP 127.0.0.1:8091──> mlx_server.py (venv 内 python)
-                                        └─ mlx_vlm.load("sahilchachra/unlimited-ocr-mxfp8-mlx")
+                                        └─ mlx_vlm.load("mlx-community/Unlimited-OCR-mxfp8")
 POST /ocr  {image: base64, mode: text|markdown}  →  {text}
 GET  /health → {status: loading|ready|failed}
 ```

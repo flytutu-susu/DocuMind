@@ -63,17 +63,17 @@ struct MLXModelVariant: Identifiable, Hashable {
 
     var id: String { repo }
 
-    /// 默认模型：sahilchachra/unlimited-ocr-mxfp8-mlx
-    static let defaultRepo = "sahilchachra/unlimited-ocr-mxfp8-mlx"
+    /// 默认模型：mlx-community/Unlimited-OCR-mxfp8（config 原生修复版）
+    static let defaultRepo = "mlx-community/Unlimited-OCR-mxfp8"
 
     /// 可切换版本（精度数据来自量化作者在 FUNSD 上的评测）
     static let presets: [MLXModelVariant] = [
-        MLXModelVariant(repo: "sahilchachra/unlimited-ocr-mxfp8-mlx",
-                        label: "MXFP8（默认）",
-                        detail: "3.6GB · CER 1.46% · 精度最佳"),
         MLXModelVariant(repo: "mlx-community/Unlimited-OCR-mxfp8",
-                        label: "MXFP8 · mlx-community 修复版",
-                        detail: "3.6GB · 修复 deepseekocr shim 重复乱码问题，需 mlx-vlm≥0.6"),
+                        label: "MXFP8 · mlx-community（默认）",
+                        detail: "3.6GB · CER 1.46% · config 原生修复版，需 mlx-vlm≥0.6"),
+        MLXModelVariant(repo: "sahilchachra/unlimited-ocr-mxfp8-mlx",
+                        label: "MXFP8",
+                        detail: "3.6GB · CER 1.46%"),
         MLXModelVariant(repo: "sahilchachra/unlimited-ocr-8bit-mlx",
                         label: "Int8",
                         detail: "3.7GB · CER 1.57% · 均衡"),
