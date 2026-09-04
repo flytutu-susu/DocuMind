@@ -94,7 +94,7 @@ final class WebAPIRouter {
                 }()
                 return [
                     "app": "DocuMind",
-                    "version": "1.2.0",
+                    "version": AppVersion.display,
                     "ocrConfigured": ocrReady,
                     "ocrEngine": settings.ocrEngine == .localMLX ? "本地 Unlimited-OCR" : "百度云 OCR",
                     "engineState": appState.mlxManager.state.displayText,

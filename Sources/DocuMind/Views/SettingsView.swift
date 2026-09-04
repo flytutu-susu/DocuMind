@@ -45,7 +45,7 @@ struct SettingsView: View {
 
     private var mlxSection: some View {
         Group {
-            Section("本地 Unlimited-OCR（MLX 4bit · 离线免费）") {
+            Section("本地 Unlimited-OCR（MLX mxfp8bit · 离线免费）") {
                 HStack {
                     Circle()
                         .fill(statusColor)
@@ -287,7 +287,7 @@ struct SettingsView: View {
             }
 
             Section("关于") {
-                LabeledContent("版本", value: "1.0.0")
+                LabeledContent("版本", value: AppVersion.display)
                 LabeledContent("OCR 引擎", value: "本地 Unlimited-OCR 3B (MLX) / 百度云 OCR")
                 LabeledContent("支持模型", value: "DeepSeek / Kimi / 千问 / OpenAI 兼容 / Anthropic")
             }

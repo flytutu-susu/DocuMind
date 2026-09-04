@@ -12,12 +12,25 @@ permissions:
 jobs:
   build:
     runs-on: macos-14   # Apple Silicon (M 系列)，与目标设备一致
+    outputs:
+      tag: ${{ steps.ver.outputs.tag }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
       - name: Select Xcode
         run: sudo xcode-select -s /Applications/Xcode_15.4.app/Contents/Developer
+
+      - name: Inject build version into Info.plist
+        id: ver
+        # CFBundleVersion 注入为 run 号，App 内显示版本与 Release tag 对应：
+        # 设置页/接口显示 "x.y.z (N)"，tag 为 vx.y.z-build.N
+        run: |
+          BASE=$(/usr/libexec/PlistBuddy -c "Print CFBundleShortVersionString" Info.plist)
+          /usr/libexec/PlistBuddy -c "Set CFBundleVersion ${GITHUB_RUN_NUMBER}" Info.plist
+          echo "base=${BASE}" >> "$GITHUB_OUTPUT"
+          echo "tag=v${BASE}-build.${GITHUB_RUN_NUMBER}" >> "$GITHUB_OUTPUT"
+          echo "注入版本: ${BASE} (${GITHUB_RUN_NUMBER})"
 
       - name: Toolchain info
         run: |
@@ -44,6 +57,9 @@ jobs:
       - name: Bundle DocuMind.app
         run: bash scripts/build-app.sh
 
+      - name: Verify bundled version
+        run: /usr/libexec/PlistBuddy -c "Print CFBundleShortVersionString" dist/DocuMind.app/Contents/Info.plist && /usr/libexec/PlistBuddy -c "Print CFBundleVersion" dist/DocuMind.app/Contents/Info.plist
+
       - name: Package app as zip
         run: ditto -c -k --sequesterRsrc --keepParent dist/DocuMind.app dist/DocuMind-macOS.zip
 
@@ -68,16 +84,6 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Compute version tag
-        id: ver
-        run: |
-          # 从 Info.plist 提取 CFBundleShortVersionString（grep/sed 跨平台，不依赖 macOS 的 PlistBuddy）
-          VERSION=$(grep -A1 "<key>CFBundleShortVersionString</key>" Info.plist | grep -o "<string>[^<]*</string>" | head -1 | sed -e 's/<string>//' -e 's/<\/string>//')
-          VERSION=${VERSION:-1.0.0}
-          TAG="v${VERSION}-build.${GITHUB_RUN_NUMBER}"
-          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
-          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
-
       - name: Download build payload
         uses: actions/download-artifact@v4
         with:
@@ -88,14 +94,14 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git tag -a "${{ steps.ver.outputs.tag }}" -m "Release ${{ steps.ver.outputs.tag }}"
-          git push origin "${{ steps.ver.outputs.tag }}"
+          git tag -a "${{ needs.build.outputs.tag }}" -m "Release ${{ needs.build.outputs.tag }}"
+          git push origin "${{ needs.build.outputs.tag }}"
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ steps.ver.outputs.tag }}
-          name: DocuMind ${{ steps.ver.outputs.tag }}
+          tag_name: ${{ needs.build.outputs.tag }}
+          name: DocuMind ${{ needs.build.outputs.tag }}
           files: dist/DocuMind-macOS.zip
           generate_release_notes: true
           make_latest: true

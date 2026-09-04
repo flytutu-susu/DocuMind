@@ -27,7 +27,7 @@ enum BaiduOCREndpoint: String, Codable, CaseIterable, Identifiable {
 // MARK: - OCR 引擎选择
 
 enum OCREngineKind: String, Codable, CaseIterable, Identifiable {
-    case localMLX       // 本地 Unlimited-OCR（MLX 4bit，离线免费）
+    case localMLX       // 本地 Unlimited-OCR（MLX mxfp8bit，离线免费）
     case baiduCloud     // 百度智能云 OCR
 
     var id: String { rawValue }
