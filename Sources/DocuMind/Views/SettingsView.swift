@@ -112,6 +112,10 @@ struct SettingsView: View {
                             .foregroundStyle(.red)
                     }
                 }
+
+                Text("需要 Python 3.10+；本机只有低版本时会自动下载独立运行时（约 45MB），不污染系统环境")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
 
             Section("运行日志") {

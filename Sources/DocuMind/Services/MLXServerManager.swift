@@ -33,12 +33,18 @@ enum MLXEngineState: Equatable {
 
 enum MLXSetupError: LocalizedError {
     case pythonMissing
+    case pythonTooOld(String)
+    case pythonDownloadFailed(String)
     case commandFailed(String, Int32)
 
     var errorDescription: String? {
         switch self {
         case .pythonMissing:
             return "未找到 python3。请先安装 Xcode 命令行工具（终端执行 xcode-select --install）或安装 Python 3.10+。"
+        case .pythonTooOld(let version):
+            return "系统 Python 版本过低（\(version)），mlx-vlm 需要 Python 3.10+。App 将尝试自动下载独立运行时。"
+        case .pythonDownloadFailed(let detail):
+            return "独立 Python 运行时下载失败：\(detail)。可手动安装 Python 3.10+（如 brew install python@3.12）后重试。"
         case .commandFailed(let cmd, let code):
             return "命令执行失败（退出码 \(code)）：\(cmd)"
         }
@@ -109,23 +115,25 @@ final class MLXServerManager: ObservableObject {
         }
     }
 
-    /// 安装 Python 环境与依赖（幂等；venv 已存在时增量 pip 安装，不重建环境）
+    /// 安装 Python 环境与依赖（幂等；venv 已存在且 Python 版本合格时增量 pip 安装）
     func install(settings: AppSettings) async throws {
         if isInstalled { return }
 
-        state = .installing("检查 Python")
-        appendLog("[setup] 检查 python3…\n")
-        let pythonCheck = try? await runCommand("/usr/bin/env", ["python3", "--version"])
-        guard pythonCheck == 0 else { throw MLXSetupError.pythonMissing }
+        state = .installing("检查 Python 运行时")
+        // mlx-vlm 需要 Python ≥ 3.10；系统 python3 可能是 3.9（macOS CLT）
+        let python = try await resolvePython(settings: settings)
+
+        // venv 已存在但 Python 版本不合格（如旧版 3.9 创建）→ 重建
+        if fm.fileExists(atPath: venvPython.path), !(await pythonMeetsRequirement(venvPython.path)) {
+            appendLog("[setup] 现有 venv 的 Python 版本过低，重建…\n")
+            try? fm.removeItem(at: venvDir)
+        }
 
         if !fm.fileExists(atPath: venvPython.path) {
             state = .installing("创建虚拟环境")
-            appendLog("[setup] 创建 venv：\(venvDir.path)\n")
-            if fm.fileExists(atPath: venvDir.path) {
-                try? fm.removeItem(at: venvDir)
-            }
-            let venvStatus = try await runCommand("/usr/bin/env", ["python3", "-m", "venv", venvDir.path])
-            guard venvStatus == 0 else { throw MLXSetupError.commandFailed("python3 -m venv", venvStatus) }
+            appendLog("[setup] 创建 venv：\(venvDir.path)（Python: \(python)）\n")
+            let venvStatus = try await runCommand(python, ["-m", "venv", venvDir.path])
+            guard venvStatus == 0 else { throw MLXSetupError.commandFailed("python -m venv", venvStatus) }
         }
 
         state = .installing("安装依赖（mlx-vlm）")
@@ -141,6 +149,116 @@ final class MLXServerManager: ObservableObject {
         try Self.depsSpec.write(to: depsMarkerURL, atomically: true, encoding: .utf8)
         appendLog("[setup] 依赖安装完成\n")
         state = .stopped
+    }
+
+    // MARK: - Python 运行时探测
+
+    /// 探测顺序：已下载的独立运行时 → Homebrew/Frameworks 高版本 → 系统 python3 → 自动下载独立运行时
+    private func resolvePython(settings: AppSettings) async throws -> String {
+        if fm.fileExists(atPath: runtimePython.path), await pythonMeetsRequirement(runtimePython.path) {
+            return runtimePython.path
+        }
+
+        let candidates: [String] = [
+            "/opt/homebrew/bin/python3.13", "/opt/homebrew/bin/python3.12",
+            "/opt/homebrew/bin/python3.11", "/opt/homebrew/bin/python3.10",
+            "/opt/homebrew/bin/python3",
+            "/usr/local/bin/python3.13", "/usr/local/bin/python3.12",
+            "/usr/local/bin/python3.11", "/usr/local/bin/python3.10",
+            "/Library/Frameworks/Python.framework/Versions/3.13/bin/python3",
+            "/Library/Frameworks/Python.framework/Versions/3.12/bin/python3",
+            "/Library/Frameworks/Python.framework/Versions/3.11/bin/python3",
+            "/Library/Frameworks/Python.framework/Versions/3.10/bin/python3",
+            "/usr/bin/python3"
+        ]
+        for candidate in candidates where fm.fileExists(atPath: candidate) {
+            if await pythonMeetsRequirement(candidate) {
+                appendLog("[setup] 使用本机 Python：\(candidate)\n")
+                return candidate
+            } else {
+                let version = await pythonVersion(candidate)
+                appendLog("[setup] 跳过 \(candidate)（版本 \(version) < 3.10）\n")
+            }
+        }
+
+        // 都没有：自动下载 python-build-standalone 独立运行时（免安装、免 sudo）
+        appendLog("[setup] 本机无 Python ≥3.10，下载独立运行时…\n")
+        return try await downloadStandalonePython(settings: settings)
+    }
+
+    private var runtimeDir: URL { baseDir.appendingPathComponent("python-runtime", isDirectory: true) }
+    private var runtimePython: URL { runtimeDir.appendingPathComponent("python/bin/python3") }
+
+    /// python-build-standalone（astral-sh 维护），Apple Silicon 免安装包
+    private static let standalonePythonURL =
+        "https://github.com/astral-sh/python-build-standalone/releases/download/20260901/cpython-3.12.14+20260901-aarch64-apple-darwin-install_only.tar.gz"
+
+    private func downloadStandalonePython(settings: AppSettings) async throws -> String {
+        state = .installing("下载 Python 3.12 独立运行时（约 45MB）")
+        // hfMirror 开启时优先走 GitHub 加速镜像前缀，失败回退直连
+        let prefixes: [String] = settings.hfMirror
+            ? ["https://ghfast.top/", "https://gh-proxy.com/", ""]
+            : [""]
+        var lastError: Error = MLXSetupError.pythonDownloadFailed("未知错误")
+        for prefix in prefixes {
+            let urlString = prefix + Self.standalonePythonURL
+            guard let url = URL(string: urlString) else { continue }
+            do {
+                appendLog("[setup] 下载：\(urlString)\n")
+                let (tmpFile, response) = try await URLSession.shared.download(from: url)
+                let statusCode = (response as? HTTPURLResponse)?.statusCode ?? -1
+                guard (200..<300).contains(statusCode) else {
+                    throw MLXSetupError.pythonDownloadFailed("HTTP \(statusCode)")
+                }
+                if fm.fileExists(atPath: runtimeDir.path) { try fm.removeItem(at: runtimeDir) }
+                try fm.createDirectory(at: runtimeDir, withIntermediateDirectories: true)
+                let tarStatus = try await runCommand("/usr/bin/tar", ["-xzf", tmpFile.path, "-C", runtimeDir.path])
+                guard tarStatus == 0, fm.fileExists(atPath: runtimePython.path) else {
+                    throw MLXSetupError.pythonDownloadFailed("解压失败")
+                }
+                guard await pythonMeetsRequirement(runtimePython.path) else {
+                    throw MLXSetupError.pythonDownloadFailed("运行时自检失败")
+                }
+                appendLog("[setup] 独立运行时就绪：\(runtimePython.path)\n")
+                return runtimePython.path
+            } catch {
+                lastError = error
+                appendLog("[setup] 该源失败：\(error.localizedDescription)，尝试下一个…\n")
+            }
+        }
+        throw lastError
+    }
+
+    // MARK: - Python 版本检查
+
+    private func pythonMeetsRequirement(_ path: String) async -> Bool {
+        let version = await pythonVersion(path)
+        guard let major = Double(version) else { return false }
+        return major >= 3.10
+    }
+
+    private func pythonVersion(_ path: String) async -> String {
+        let (status, output) = await runCapture(path, ["-c", "import sys; print('%d.%d' % sys.version_info[:2])"])
+        guard status == 0 else { return "0" }
+        return output.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// 执行命令并捕获 stdout（不写入日志面板，用于探测）
+    private func runCapture(_ executable: String, _ arguments: [String]) async -> (Int32, String) {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: executable)
+        process.arguments = arguments
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = FileHandle.nullDevice
+        do {
+            try process.run()
+        } catch {
+            return (-1, "")
+        }
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        return (process.terminationStatus, String(data: data, encoding: .utf8) ?? "")
     }
 
     // MARK: - 启动 / 停止

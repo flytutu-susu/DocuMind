@@ -16,7 +16,7 @@ macOS 文档智能平台（Swift + SwiftUI）：**本地 Unlimited-OCR 结构化
 ## 环境要求
 
 - macOS 13+，Apple Silicon（M1 16GB 可流畅运行本地 3B 模型）
-- Python 3.10+（Xcode 命令行工具自带的 `/usr/bin/python3` 即可，App 会自动创建独立 venv，不污染系统环境）
+- Python 3.10+（mlx-vlm 要求；App 会依次探测 Homebrew / python.org / 系统 Python，**都不满足时自动下载 python-build-standalone 独立运行时至应用目录**，免安装免 sudo，不污染系统环境）
 - 构建需要 Xcode 15+ 或 Command Line Tools（含 Swift 5.9+）
 - 首次启动本地引擎需联网下载依赖（mlx-vlm，~300MB）和模型（~3.6GB），默认走国内镜像加速
 
