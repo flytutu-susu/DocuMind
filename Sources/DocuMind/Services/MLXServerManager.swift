@@ -284,11 +284,26 @@ final class MLXServerManager: ObservableObject {
             environment["HF_ENDPOINT"] = "https://hf-mirror.com"   // 国内模型下载镜像
         }
 
+        // 模型引用：本地目录优先（复用手动下载），否则 HF 仓库 ID
+        let modelRef: String
+        if !settings.mlxModelPath.isEmpty {
+            let path = (settings.mlxModelPath as NSString).expandingTildeInPath
+            let configPath = (path as NSString).appendingPathComponent("config.json")
+            guard fm.fileExists(atPath: configPath) else {
+                state = .failed("本地模型目录无效（缺少 config.json）：\(path)")
+                appendLog("[server] 本地模型目录无效：\(path)\n")
+                return
+            }
+            modelRef = path
+        } else {
+            modelRef = settings.mlxModelRepo
+        }
+
         let process = Process()
         process.executableURL = venvPython
         process.arguments = [
             scriptURL.path,
-            "--model", settings.mlxModelRepo,
+            "--model", modelRef,
             "--port", String(settings.mlxPort),
             "--host", "127.0.0.1"
         ]
@@ -317,7 +332,7 @@ final class MLXServerManager: ObservableObject {
         do {
             try process.run()
             serverProcess = process
-            appendLog("[server] 已启动，端口 \(settings.mlxPort)，模型 \(settings.mlxModelRepo)\n")
+            appendLog("[server] 已启动，端口 \(settings.mlxPort)，模型 \(modelRef)\n")
         } catch {
             state = .failed("启动失败：\(error.readableMessage)")
             return

@@ -37,6 +37,7 @@ open dist/DocuMind.app
 
 1. **OCR（本地引擎，推荐）**：打开 App → `⌘,` → 「OCR 引擎」→ 点「安装环境并启动」。App 会自动：创建 venv → 安装依赖 → 下载模型 → 启动推理服务（仅监听 127.0.0.1）。日志面板可见下载进度，就绪后状态变绿。
    - 模型默认 [mlx-community/Unlimited-OCR-mxfp8](https://huggingface.co/mlx-community/Unlimited-OCR-mxfp8)（config 原生修复版）；可切换 [sahilchachra 量化系列](https://huggingface.co/sahilchachra) 的 MXFP8 / Int8 / Int4 / MXFP4
+   - **手动下载模型**：`hf download mlx-community/Unlimited-OCR-mxfp8`（不加 `--local-dir`）会进入默认缓存被自动识别；已用 `--local-dir` 下载的扁平目录，在「设置 → OCR 引擎 → 本地模型目录」中指定即可复用，不会重复下载
 2. **OCR（百度云，可选）**：引擎切换为「百度智能云 OCR」，填入[控制台](https://console.bce.baidu.com/ai-engine/ocr/overview/index)创建的 API Key / Secret Key 即可。PDF 转 Word 时自动升级使用含位置版接口，按行级坐标重建段落版面（无表格/图片语义，完整语义版面请用本地引擎）。
 3. **大模型**：设置 → 大模型 → 添加预设（DeepSeek / Kimi / 千问 / OpenAI / Anthropic 已内置 Base URL 与默认模型），填入 API Key。
 4. **局域网服务**：「局域网服务」页点「启动服务」，手机/其他电脑浏览器访问列表地址。

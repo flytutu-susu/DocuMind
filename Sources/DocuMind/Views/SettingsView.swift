@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 
 struct SettingsView: View {
     @EnvironmentObject var appState: AppState
@@ -69,6 +70,29 @@ struct SettingsView: View {
                 if modelSelection.wrappedValue == "custom" {
                     TextField("HuggingFace 仓库 ID", text: $settingsStore.settings.mlxModelRepo)
                 }
+
+                // 本地模型目录：复用手动下载（hf download --local-dir 的产物），设置后优先于仓库 ID
+                HStack {
+                    Text("本地模型目录")
+                    Spacer()
+                    if settingsStore.settings.mlxModelPath.isEmpty {
+                        Text("未设置（按上方仓库在线下载）")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    } else {
+                        Text(settingsStore.settings.mlxModelPath)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                            .frame(maxWidth: 220)
+                    }
+                    Button("选择…") { chooseModelDirectory() }
+                    if !settingsStore.settings.mlxModelPath.isEmpty {
+                        Button("清除") { settingsStore.settings.mlxModelPath = "" }
+                    }
+                }
+                .help("手动下载模型时：hf download <仓库ID>（不加 --local-dir）会进默认缓存被自动识别；\n用 --local-dir 下载的扁平目录请在此指定。设置后点「应用配置并重启」生效。")
 
                 HStack {
                     TextField("本地端口", value: $settingsStore.settings.mlxPort, format: .number)
@@ -160,6 +184,17 @@ struct SettingsView: View {
     private func reinstall() {
         mlxManager.stop()
         mlxManager.installAndStart(settings: settingsStore.settings)
+    }
+
+    /// 选择本地模型目录（复用手动下载的模型）
+    private func chooseModelDirectory() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+        panel.message = "选择包含 config.json 的模型目录"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        settingsStore.settings.mlxModelPath = url.path
     }
 
     // MARK: 百度云 OCR

@@ -103,6 +103,8 @@ struct AppSettings: Codable {
 
     // 本地 MLX 引擎
     var mlxModelRepo: String = MLXModelVariant.defaultRepo
+    /// 本地模型目录（非空时优先于 HF 仓库 ID；用于复用手动下载的模型，如 hf download --local-dir 的产物）
+    var mlxModelPath: String = ""
     var mlxPort: Int = 8091
     var mlxPromptMode: MLXOutputMode = .markdown
     var mlxAutoStart: Bool = false
@@ -134,6 +136,7 @@ struct AppSettings: Codable {
         baiduEndpoint = try c.decodeIfPresent(BaiduOCREndpoint.self, forKey: .baiduEndpoint) ?? .accurateBasic
         mergeParagraph = try c.decodeIfPresent(Bool.self, forKey: .mergeParagraph) ?? true
         mlxModelRepo = try c.decodeIfPresent(String.self, forKey: .mlxModelRepo) ?? MLXModelVariant.defaultRepo
+        mlxModelPath = try c.decodeIfPresent(String.self, forKey: .mlxModelPath) ?? ""
         mlxPort = try c.decodeIfPresent(Int.self, forKey: .mlxPort) ?? 8091
         mlxPromptMode = try c.decodeIfPresent(MLXOutputMode.self, forKey: .mlxPromptMode) ?? .markdown
         mlxAutoStart = try c.decodeIfPresent(Bool.self, forKey: .mlxAutoStart) ?? false
