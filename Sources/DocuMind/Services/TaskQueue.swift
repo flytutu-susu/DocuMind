@@ -45,47 +45,48 @@ final class TaskQueue: ObservableObject {
     // MARK: - 入队
 
     /// 文件入库 + 创建 OCR 任务（docx/xlsx 自动路由到 Parse lane）
+    /// - Parameter owner: 数据归属（"local"=本机，或局域网客户端 IP）
     @discardableResult
-    func enqueueOCR(fileURL: URL) throws -> UUID {
+    func enqueueOCR(fileURL: URL, owner: String = "local") throws -> UUID {
         let kind = DocumentKind(fileExtension: fileURL.pathExtension)
         guard kind != .unknown else { throw DocumentProcessError.unsupportedType }
-        let doc = try store.createDocument(name: fileURL.lastPathComponent, kind: kind, sourceFile: fileURL)
-        let task = try store.createTask(kind: .ocr, documentID: doc.id, fileName: doc.name)
+        let doc = try store.createDocument(name: fileURL.lastPathComponent, kind: kind, sourceFile: fileURL, owner: owner)
+        let task = try store.createTask(kind: .ocr, documentID: doc.id, fileName: doc.name, owner: owner)
         enqueue(taskID: task.id, lane: laneForDocumentKind(kind))
         return task.id
     }
 
     /// 原始字节入库（Web 上传）+ 创建 OCR 任务
     @discardableResult
-    func enqueueOCR(data: Data, fileName: String) throws -> UUID {
+    func enqueueOCR(data: Data, fileName: String, owner: String = "local") throws -> UUID {
         let kind = DocumentKind(fileExtension: (fileName as NSString).pathExtension)
         guard kind != .unknown else { throw DocumentProcessError.unsupportedType }
         let tmp = FileManager.default.temporaryDirectory
             .appendingPathComponent("documind-incoming-\(UUID().uuidString)-\(fileName)")
         try data.write(to: tmp)
         defer { try? FileManager.default.removeItem(at: tmp) }
-        let doc = try store.createDocument(name: fileName, kind: kind, sourceFile: tmp)
-        let task = try store.createTask(kind: .ocr, documentID: doc.id, fileName: fileName)
+        let doc = try store.createDocument(name: fileName, kind: kind, sourceFile: tmp, owner: owner)
+        let task = try store.createTask(kind: .ocr, documentID: doc.id, fileName: fileName, owner: owner)
         enqueue(taskID: task.id, lane: laneForDocumentKind(kind))
         return task.id
     }
 
     @discardableResult
-    func enqueueConvert(fileURL: URL) throws -> UUID {
-        let doc = try store.createDocument(name: fileURL.lastPathComponent, kind: .pdf, sourceFile: fileURL)
-        let task = try store.createTask(kind: .pdfToWord, documentID: doc.id, fileName: doc.name)
+    func enqueueConvert(fileURL: URL, owner: String = "local") throws -> UUID {
+        let doc = try store.createDocument(name: fileURL.lastPathComponent, kind: .pdf, sourceFile: fileURL, owner: owner)
+        let task = try store.createTask(kind: .pdfToWord, documentID: doc.id, fileName: doc.name, owner: owner)
         enqueue(taskID: task.id, lane: .convert)
         return task.id
     }
 
     @discardableResult
-    func enqueueConvert(data: Data, fileName: String) throws -> UUID {
+    func enqueueConvert(data: Data, fileName: String, owner: String = "local") throws -> UUID {
         let tmp = FileManager.default.temporaryDirectory
             .appendingPathComponent("documind-incoming-\(UUID().uuidString).pdf")
         try data.write(to: tmp)
         defer { try? FileManager.default.removeItem(at: tmp) }
-        let doc = try store.createDocument(name: fileName, kind: .pdf, sourceFile: tmp)
-        let task = try store.createTask(kind: .pdfToWord, documentID: doc.id, fileName: fileName)
+        let doc = try store.createDocument(name: fileName, kind: .pdf, sourceFile: tmp, owner: owner)
+        let task = try store.createTask(kind: .pdfToWord, documentID: doc.id, fileName: fileName, owner: owner)
         enqueue(taskID: task.id, lane: .convert)
         return task.id
     }

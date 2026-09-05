@@ -33,6 +33,7 @@ final class DocumentStore {
             id TEXT PRIMARY KEY,
             name TEXT NOT NULL,
             kind TEXT NOT NULL,
+            owner TEXT NOT NULL DEFAULT 'local',
             created_at REAL NOT NULL
         );
         """)
@@ -71,24 +72,38 @@ final class DocumentStore {
             engine TEXT NOT NULL DEFAULT '',
             output_path TEXT,
             output_name TEXT,
+            owner TEXT NOT NULL DEFAULT 'local',
             created_at REAL NOT NULL,
             updated_at REAL NOT NULL
         );
         """)
         try db.exec("CREATE INDEX IF NOT EXISTS idx_tasks_state ON tasks(state);")
+        try db.exec("CREATE INDEX IF NOT EXISTS idx_tasks_owner ON tasks(owner);")
         try db.exec("CREATE INDEX IF NOT EXISTS idx_versions_doc ON document_versions(document_id);")
         try db.exec("CREATE INDEX IF NOT EXISTS idx_results_doc ON ocr_results(document_id);")
+
+        // v1.4 → v1.5 迁移：存量表补 owner 列（旧数据归本机所有）
+        try migrateAddOwnerColumn(table: "documents")
+        try migrateAddOwnerColumn(table: "tasks")
+    }
+
+    private func migrateAddOwnerColumn(table: String) throws {
+        let columns = try db.fetch("PRAGMA table_info(\(table))").compactMap { $0.string("name") }
+        if !columns.contains("owner") {
+            try db.exec("ALTER TABLE \(table) ADD COLUMN owner TEXT NOT NULL DEFAULT 'local'")
+        }
     }
 
     // MARK: - 文档
 
     /// 入库：复制源文件到 library/docs/<id>/v1-文件名，创建 documents + document_versions 记录
     @discardableResult
-    func createDocument(name: String, kind: DocumentKind, sourceFile: URL) throws -> DocumentRecord {
+    func createDocument(name: String, kind: DocumentKind, sourceFile: URL, owner: String = "local") throws -> DocumentRecord {
         let id = UUID()
-        let record = DocumentRecord(id: id, name: name, kind: kind, createdAt: Date())
-        try db.run("INSERT INTO documents(id, name, kind, created_at) VALUES(?,?,?,?)",
-                   [id.uuidString, name, kind.rawValue, record.createdAt.timeIntervalSince1970])
+        var record = DocumentRecord(id: id, name: name, kind: kind, createdAt: Date())
+        record.owner = owner
+        try db.run("INSERT INTO documents(id, name, kind, owner, created_at) VALUES(?,?,?,?,?)",
+                   [id.uuidString, name, kind.rawValue, owner, record.createdAt.timeIntervalSince1970])
         try addVersion(documentID: id, sourceFile: sourceFile)
         return record
     }
@@ -120,8 +135,12 @@ final class DocumentStore {
         return record
     }
 
-    func listDocuments() throws -> [DocumentRecord] {
-        try db.fetch("SELECT * FROM documents ORDER BY created_at DESC").compactMap(document(from:))
+    func listDocuments(owner: String? = nil) throws -> [DocumentRecord] {
+        if let owner {
+            return try db.fetch("SELECT * FROM documents WHERE owner=? ORDER BY created_at DESC", [owner])
+                .compactMap(document(from:))
+        }
+        return try db.fetch("SELECT * FROM documents ORDER BY created_at DESC").compactMap(document(from:))
     }
 
     func document(id: UUID) throws -> DocumentRecord? {
@@ -182,19 +201,20 @@ final class DocumentStore {
     // MARK: - 任务
 
     @discardableResult
-    func createTask(kind: TaskKind, documentID: UUID?, fileName: String) throws -> TaskRecord {
+    func createTask(kind: TaskKind, documentID: UUID?, fileName: String, owner: String = "local") throws -> TaskRecord {
         let now = Date()
-        let task = TaskRecord(id: UUID(), kind: kind, documentID: documentID, fileName: fileName,
+        var task = TaskRecord(id: UUID(), kind: kind, documentID: documentID, fileName: fileName,
                               state: .pending, progress: 0, message: "排队中", error: nil,
                               engine: "", outputPath: nil, outputName: nil,
                               createdAt: now, updatedAt: now)
+        task.owner = owner
         try db.run("""
             INSERT INTO tasks(id, kind, document_id, file_name, state, progress, message,
-                              error, engine, output_path, output_name, created_at, updated_at)
-            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
+                              error, engine, output_path, output_name, owner, created_at, updated_at)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """, [task.id.uuidString, kind.rawValue, nullable(documentID?.uuidString), fileName,
                   TaskState.pending.rawValue, 0.0, "排队中", NSNull(), "",
-                  NSNull(), NSNull(), now.timeIntervalSince1970, now.timeIntervalSince1970])
+                  NSNull(), NSNull(), owner, now.timeIntervalSince1970, now.timeIntervalSince1970])
         return task
     }
 
@@ -223,8 +243,12 @@ final class DocumentStore {
         try db.fetch("SELECT * FROM tasks WHERE id=?", [id.uuidString]).first.flatMap(task(from:))
     }
 
-    func listTasks(limit: Int = 200) throws -> [TaskRecord] {
-        try db.fetch("SELECT * FROM tasks ORDER BY created_at DESC LIMIT ?", [limit])
+    func listTasks(limit: Int = 200, owner: String? = nil) throws -> [TaskRecord] {
+        if let owner {
+            return try db.fetch("SELECT * FROM tasks WHERE owner=? ORDER BY created_at DESC LIMIT ?", [owner, limit])
+                .compactMap(task(from:))
+        }
+        return try db.fetch("SELECT * FROM tasks ORDER BY created_at DESC LIMIT ?", [limit])
             .compactMap(task(from:))
     }
 
@@ -234,7 +258,8 @@ final class DocumentStore {
         guard let id = row.uuid("id"), let name = row.string("name") else { return nil }
         return DocumentRecord(id: id, name: name,
                               kind: DocumentKind(rawValue: row.string("kind") ?? "") ?? .unknown,
-                              createdAt: row.date("created_at"))
+                              createdAt: row.date("created_at"),
+                              owner: row.string("owner") ?? "local")
     }
 
     private func version(from row: [String: Any]) -> DocumentVersionRecord? {
@@ -271,6 +296,7 @@ final class DocumentStore {
                           outputPath: row.string("output_path"),
                           outputName: row.string("output_name"),
                           createdAt: row.date("created_at"),
-                          updatedAt: row.date("updated_at"))
+                          updatedAt: row.date("updated_at"),
+                          owner: row.string("owner") ?? "local")
     }
 }

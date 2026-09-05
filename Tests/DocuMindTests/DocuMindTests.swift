@@ -268,4 +268,47 @@ final class DocuMindTests: XCTestCase {
         let unknown = await router.handle(req("/api/nope"))
         XCTAssertEqual(unknown.statusCode, 404)
     }
+
+    /// IP 隔离：本机（127.0.0.1/::1）全量可见；局域网 IP 仅见自己上传的数据
+    @MainActor
+    func testOwnershipIsolation() async throws {
+        let appState = AppState()
+        let router = WebAPIRouter(appState: appState)
+
+        func req(_ path: String, from ip: String) -> HTTPRequest {
+            HTTPRequest(method: "GET", path: path, query: [:], headers: [:], body: Data(), remoteAddress: ip)
+        }
+
+        // 本机任务 + 访客任务（不同 owner）
+        let localTask = try appState.store.createTask(kind: .ocr, documentID: nil, fileName: "本机文件.pdf", owner: "local")
+        let guestTask = try appState.store.createTask(kind: .ocr, documentID: nil, fileName: "访客文件.pdf", owner: "192.168.1.50")
+
+        // 本机：全部可见
+        let localList = await router.handle(req("/api/tasks", from: "127.0.0.1"))
+        let localBody = String(decoding: localList.body, as: UTF8.self)
+        XCTAssertTrue(localBody.contains("本机文件.pdf"))
+        XCTAssertTrue(localBody.contains("访客文件.pdf"))
+
+        // 访客：仅自己
+        let guestList = await router.handle(req("/api/tasks", from: "192.168.1.50"))
+        let guestBody = String(decoding: guestList.body, as: UTF8.self)
+        XCTAssertFalse(guestBody.contains("本机文件.pdf"))
+        XCTAssertTrue(guestBody.contains("访客文件.pdf"))
+
+        // 访客访问本机的任务 → 404（不暴露存在性）
+        let denied = await router.handle(req("/api/tasks/\(localTask.id.uuidString)", from: "192.168.1.50"))
+        XCTAssertEqual(denied.statusCode, 404)
+
+        // 访客访问自己的任务 → 200
+        let own = await router.handle(req("/api/tasks/\(guestTask.id.uuidString)", from: "192.168.1.50"))
+        XCTAssertEqual(own.statusCode, 200)
+
+        // 其他 IP → 404
+        let other = await router.handle(req("/api/tasks/\(guestTask.id.uuidString)", from: "192.168.1.51"))
+        XCTAssertEqual(other.statusCode, 404)
+
+        // IPv6 回环也算本机
+        let v6 = await router.handle(req("/api/tasks", from: "::1"))
+        XCTAssertTrue(String(decoding: v6.body, as: UTF8.self).contains("本机文件.pdf"))
+    }
 }

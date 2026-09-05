@@ -205,8 +205,20 @@ final class LocalHTTPServer: @unchecked Sendable {
             body = body.subdata(in: 0..<contentLength)
         }
 
-        let remote = connection.endpoint.debugDescription
+        let remote = Self.remoteHost(from: connection.endpoint)
         return HTTPRequest(method: method, path: path, query: query, headers: headers, body: body, remoteAddress: remote)
+    }
+
+    /// 从连接端点提取纯 IP（去掉端口与 IPv6 zone id）
+    static func remoteHost(from endpoint: NWEndpoint) -> String {
+        guard case .hostPort(let host, _) = endpoint else {
+            return endpoint.debugDescription
+        }
+        var h = host.debugDescription
+        if let percentIndex = h.firstIndex(of: "%") {
+            h = String(h[..<percentIndex])   // 去掉 fe80::…%en0 的 zone
+        }
+        return h
     }
 
     private func receiveChunk(_ connection: NWConnection) async throws -> Data {

@@ -16,6 +16,8 @@ struct DocumentRecord: Identifiable, Hashable {
     let name: String
     let kind: DocumentKind
     let createdAt: Date
+    /// 数据归属："local" = 本机（App/本机网页）；其他 = 局域网客户端 IP
+    var owner: String = "local"
 }
 
 struct DocumentVersionRecord: Identifiable, Hashable {
@@ -71,6 +73,8 @@ struct TaskRecord: Identifiable, Hashable {
     var outputName: String?
     let createdAt: Date
     var updatedAt: Date
+    /// 数据归属："local" = 本机；其他 = 局域网客户端 IP
+    var owner: String = "local"
 
     var isActive: Bool { state == .pending || state == .running }
 }

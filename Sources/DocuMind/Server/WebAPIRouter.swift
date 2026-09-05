@@ -27,6 +27,23 @@ final class WebAPIRouter {
         }
     }
 
+    // MARK: - 身份与数据隔离
+
+    /// 请求身份：本机（127.0.0.1 / ::1 / localhost）为 "local"（可见全部数据）；
+    /// 局域网设备为其客户端 IP（仅可见自己上传的数据）。
+    private func ownerKey(for request: HTTPRequest) -> String {
+        let ip = request.remoteAddress
+        switch ip {
+        case "127.0.0.1", "::1", "localhost": return "local"
+        default: return ip
+        }
+    }
+
+    /// 访问判定：本机全量；其他仅自己的数据
+    private func canAccess(owner: String, as key: String) -> Bool {
+        key == "local" || owner == key
+    }
+
     // MARK: - 路由
 
     func handle(_ request: HTTPRequest) async -> HTTPResponse {
@@ -45,23 +62,24 @@ final class WebAPIRouter {
         // 切分示例："/api/tasks/<uuid>" → ["api", "tasks", "<uuid>"]
         let components = path.split(separator: "/").map(String.init)
         if components.count >= 3, components[0] == "api" {
+            let identity = ownerKey(for: request)
             if method == "GET" {
                 if components[1] == "tasks", let id = UUID(uuidString: components[2]) {
                     if components.count == 4, components[3] == "download" {
-                        return await taskDownload(id: id)
+                        return await taskDownload(id: id, identity: identity)
                     }
                     if components.count == 3 {
-                        return await taskDetail(id: id)
+                        return await taskDetail(id: id, identity: identity)
                     }
                 }
                 if components[1] == "documents", components.count == 3, let id = UUID(uuidString: components[2]) {
-                    return await documentDetail(id: id)
+                    return await documentDetail(id: id, identity: identity)
                 }
             }
             if method == "DELETE",
                components[1] == "documents", components.count == 3,
                let id = UUID(uuidString: components[2]) {
-                return await deleteDocument(id: id)
+                return await deleteDocument(id: id, identity: identity)
             }
         }
 
@@ -70,16 +88,16 @@ final class WebAPIRouter {
             return .text(WebPage.html, contentType: "text/html; charset=utf-8")
 
         case ("GET", "/api/status"):
-            return await handleStatus()
+            return await handleStatus(request: request)
 
         case ("GET", "/api/llm/providers"):
             return await handleProviders()
 
         case ("GET", "/api/tasks"):
-            return await taskList()
+            return await taskList(identity: ownerKey(for: request))
 
         case ("GET", "/api/documents"):
-            return await documentList()
+            return await documentList(identity: ownerKey(for: request))
 
         case ("POST", "/api/ocr"):
             return await enqueueTask(request, kind: .ocr)
@@ -97,7 +115,8 @@ final class WebAPIRouter {
 
     // MARK: - 状态
 
-    private func handleStatus() async -> HTTPResponse {
+    private func handleStatus(request: HTTPRequest) async -> HTTPResponse {
+        let identity = ownerKey(for: request)
         do {
             let payload = try await onMain { appState -> [String: Any] in
                 let settings = appState.settings
@@ -113,7 +132,9 @@ final class WebAPIRouter {
                     "ocrConfigured": ocrReady,
                     "ocrEngine": settings.ocrEngine == .localMLX ? "本地 Unlimited-OCR" : "百度云 OCR",
                     "engineState": appState.mlxManager.state.displayText,
-                    "providers": settings.llmProviders.filter { $0.enabled }.map { $0.name }
+                    "providers": settings.llmProviders.filter { $0.enabled }.map { $0.name },
+                    "identity": identity,
+                    "identity_scope": identity == "local" ? "all" : "own"
                 ]
             }
             return .json(payload)
@@ -141,16 +162,17 @@ final class WebAPIRouter {
         guard !request.body.isEmpty else { return .error(400, "请求体为空：请上传文件") }
         let fileName = sanitizedFileName(request.header("x-file-name") ?? "upload.bin")
         let body = request.body
+        let identity = ownerKey(for: request)
         do {
             let taskID = try await onMain { appState -> UUID in
                 switch kind {
                 case .ocr:
-                    return try appState.taskQueue.enqueueOCR(data: body, fileName: fileName)
+                    return try appState.taskQueue.enqueueOCR(data: body, fileName: fileName, owner: identity)
                 case .pdfToWord:
                     guard DocumentKind(fileExtension: (fileName as NSString).pathExtension) == .pdf else {
                         throw DocumentProcessError.unsupportedType
                     }
-                    return try appState.taskQueue.enqueueConvert(data: body, fileName: fileName)
+                    return try appState.taskQueue.enqueueConvert(data: body, fileName: fileName, owner: identity)
                 }
             }
             return .json(["task_id": taskID.uuidString, "status": "pending"])
@@ -159,19 +181,25 @@ final class WebAPIRouter {
         }
     }
 
-    private func taskList() async -> HTTPResponse {
+    private func taskList(identity: String) async -> HTTPResponse {
         do {
-            let tasks = try await onMain { $0.taskQueue.tasks.map(taskJSON) }
+            let tasks = try await onMain { appState in
+                // 本机看全部；其他 IP 仅看自己的
+                let rows = (try? appState.store.listTasks(
+                    owner: identity == "local" ? nil : identity)) ?? []
+                return rows.map(self.taskJSON)
+            }
             return .json(["tasks": tasks])
         } catch {
             return .error(500, error.readableMessage)
         }
     }
 
-    private func taskDetail(id: UUID) async -> HTTPResponse {
+    private func taskDetail(id: UUID, identity: String) async -> HTTPResponse {
         do {
             let payload = try await onMain { appState -> [String: Any]? in
-                guard let task = try? appState.store.task(id) else { return nil }
+                guard let task = try? appState.store.task(id),
+                      self.canAccess(owner: task.owner, as: identity) else { return nil }
                 var json = self.taskJSON(task)
                 if task.kind == .ocr, task.state == .success,
                    let text = appState.taskQueue.resultText(for: task) {
@@ -189,10 +217,11 @@ final class WebAPIRouter {
         }
     }
 
-    private func taskDownload(id: UUID) async -> HTTPResponse {
+    private func taskDownload(id: UUID, identity: String) async -> HTTPResponse {
         do {
             let info = try await onMain { appState -> (String, String, String)? in
-                guard let task = try? appState.store.task(id) else { return nil }
+                guard let task = try? appState.store.task(id),
+                      self.canAccess(owner: task.owner, as: identity) else { return nil }
                 if task.kind == .pdfToWord, let path = task.outputPath {
                     return (path,
                             task.outputName ?? "output.docx",
@@ -226,10 +255,13 @@ final class WebAPIRouter {
 
     // MARK: - 文档库
 
-    private func documentList() async -> HTTPResponse {
+    private func documentList(identity: String) async -> HTTPResponse {
         do {
             let docs = try await onMain { appState in
-                ((try? appState.store.listDocuments()) ?? []).map { doc -> [String: Any] in
+                // 本机看全部；其他 IP 仅看自己的
+                let rows = (try? appState.store.listDocuments(
+                    owner: identity == "local" ? nil : identity)) ?? []
+                return rows.map { doc -> [String: Any] in
                     let versions = (try? appState.store.versions(of: doc.id)) ?? []
                     let hasResult = (try? appState.store.latestOCRResult(of: doc.id)) != nil
                     return [
@@ -249,9 +281,11 @@ final class WebAPIRouter {
         }
     }
 
-    private func documentDetail(id: UUID) async -> HTTPResponse {
+    private func documentDetail(id: UUID, identity: String) async -> HTTPResponse {
         do {
-            let payload = try await onMain { appState -> [String: Any]? in                guard let doc = try? appState.store.document(id: id) else { return nil }
+            let payload = try await onMain { appState -> [String: Any]? in
+                guard let doc = try? appState.store.document(id: id),
+                      self.canAccess(owner: doc.owner, as: identity) else { return nil }
                 let versions = (try? appState.store.versions(of: doc.id)) ?? []
                 let result = try? appState.store.latestOCRResult(of: doc.id)
                 var json: [String: Any] = [
@@ -279,12 +313,13 @@ final class WebAPIRouter {
         }
     }
 
-    /// 删除文档（级联：识别结果/任务/版本/磁盘文件）
-    private func deleteDocument(id: UUID) async -> HTTPResponse {
+    /// 删除文档（级联：识别结果/任务/版本/磁盘文件）；仅能删除自己可见的数据
+    private func deleteDocument(id: UUID, identity: String) async -> HTTPResponse {
         do {
             try await onMain { appState in
-                guard try appState.store.document(id: id) != nil else {
-                    throw RouterError.notFound("文档不存在")
+                guard let doc = try appState.store.document(id: id),
+                      self.canAccess(owner: doc.owner, as: identity) else {
+                    throw RouterError.notFound("文档不存在")   // 不暴露存在性
                 }
                 try appState.store.deleteDocument(id: id)
                 appState.taskQueue.refresh()

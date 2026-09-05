@@ -420,9 +420,13 @@ document.getElementById('chatInput').addEventListener('keydown', e => {
   try {
     const resp = await fetch('/api/status');
     const data = await resp.json();
+    const identity = data.identity_scope === 'all'
+      ? '本机管理端 · 全部数据可见'
+      : ('访客 ' + (data.identity || '') + ' · 仅自己的数据');
     document.getElementById('serverInfo').textContent =
       data.app + ' v' + data.version + ' · ' + (data.ocrEngine || 'OCR') +
       (data.engineState ? ' · ' + data.engineState : '') +
+      ' · ' + identity +
       (data.ocrConfigured ? '' : ' · ⚠️ 引擎未就绪');
   } catch (e) {}
   loadProviders();
