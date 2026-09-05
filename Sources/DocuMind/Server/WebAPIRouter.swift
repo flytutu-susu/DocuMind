@@ -17,7 +17,14 @@ final class WebAPIRouter {
 
     enum RouterError: LocalizedError {
         case unavailable
-        var errorDescription: String? { "服务不可用" }
+        case notFound(String)
+
+        var errorDescription: String? {
+            switch self {
+            case .unavailable: return "服务不可用"
+            case .notFound(let msg): return msg
+            }
+        }
     }
 
     // MARK: - 路由
@@ -26,7 +33,7 @@ final class WebAPIRouter {
         // CORS 预检
         if request.method == "OPTIONS" {
             return HTTPResponse(statusCode: 200, headers: [
-                "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+                "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
                 "Access-Control-Allow-Headers": "Content-Type, X-File-Name"
             ], body: Data())
         }
@@ -37,17 +44,24 @@ final class WebAPIRouter {
         // 参数化路径：/api/tasks/{id}、/api/tasks/{id}/download、/api/documents/{id}
         // 切分示例："/api/tasks/<uuid>" → ["api", "tasks", "<uuid>"]
         let components = path.split(separator: "/").map(String.init)
-        if method == "GET", components.count >= 3, components[0] == "api" {
-            if components[1] == "tasks", let id = UUID(uuidString: components[2]) {
-                if components.count == 4, components[3] == "download" {
-                    return await taskDownload(id: id)
+        if components.count >= 3, components[0] == "api" {
+            if method == "GET" {
+                if components[1] == "tasks", let id = UUID(uuidString: components[2]) {
+                    if components.count == 4, components[3] == "download" {
+                        return await taskDownload(id: id)
+                    }
+                    if components.count == 3 {
+                        return await taskDetail(id: id)
+                    }
                 }
-                if components.count == 3 {
-                    return await taskDetail(id: id)
+                if components[1] == "documents", components.count == 3, let id = UUID(uuidString: components[2]) {
+                    return await documentDetail(id: id)
                 }
             }
-            if components[1] == "documents", components.count == 3, let id = UUID(uuidString: components[2]) {
-                return await documentDetail(id: id)
+            if method == "DELETE",
+               components[1] == "documents", components.count == 3,
+               let id = UUID(uuidString: components[2]) {
+                return await deleteDocument(id: id)
             }
         }
 
@@ -237,8 +251,7 @@ final class WebAPIRouter {
 
     private func documentDetail(id: UUID) async -> HTTPResponse {
         do {
-            let payload = try await onMain { appState -> [String: Any]? in
-                guard let doc = try? appState.store.document(id: id) else { return nil }
+            let payload = try await onMain { appState -> [String: Any]? in                guard let doc = try? appState.store.document(id: id) else { return nil }
                 let versions = (try? appState.store.versions(of: doc.id)) ?? []
                 let result = try? appState.store.latestOCRResult(of: doc.id)
                 var json: [String: Any] = [
@@ -261,6 +274,22 @@ final class WebAPIRouter {
             }
             guard let payload else { return .error(404, "文档不存在") }
             return .json(payload)
+        } catch {
+            return .error(500, error.readableMessage)
+        }
+    }
+
+    /// 删除文档（级联：识别结果/任务/版本/磁盘文件）
+    private func deleteDocument(id: UUID) async -> HTTPResponse {
+        do {
+            try await onMain { appState in
+                guard try appState.store.document(id: id) != nil else {
+                    throw RouterError.notFound("文档不存在")
+                }
+                try appState.store.deleteDocument(id: id)
+                appState.taskQueue.refresh()
+            }
+            return .json(["ok": true])
         } catch {
             return .error(500, error.readableMessage)
         }

@@ -140,6 +140,27 @@ final class DocumentStore {
             """, [documentID.uuidString]).first?.string("file_path").map(URL.init(fileURLWithPath:))
     }
 
+    // MARK: - 删除
+
+    /// 级联删除文档：识别结果 → 任务（含转换产物文件）→ 版本 → 文档，最后清理磁盘目录
+    func deleteDocument(id: UUID) throws {
+        // 先收集磁盘产物路径（转换产物在任务行上）
+        let taskRows = try db.fetch("SELECT output_path FROM tasks WHERE document_id=?", [id.uuidString])
+        let outputPaths = taskRows.compactMap { $0.string("output_path") }
+
+        try db.run("DELETE FROM ocr_results WHERE document_id=?", [id.uuidString])
+        try db.run("DELETE FROM tasks WHERE document_id=?", [id.uuidString])
+        try db.run("DELETE FROM document_versions WHERE document_id=?", [id.uuidString])
+        try db.run("DELETE FROM documents WHERE id=?", [id.uuidString])
+
+        // 磁盘清理：文档目录 + 转换产物
+        try? FileManager.default.removeItem(
+            at: rootDir.appendingPathComponent("docs/\(id.uuidString)", isDirectory: true))
+        for path in outputPaths {
+            try? FileManager.default.removeItem(atPath: path)
+        }
+    }
+
     // MARK: - OCR 结果
 
     func saveOCRResult(documentID: UUID, engine: String, mode: String, text: String,

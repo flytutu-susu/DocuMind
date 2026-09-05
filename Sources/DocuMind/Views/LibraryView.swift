@@ -51,6 +51,11 @@ struct LibraryView: View {
                                 .foregroundStyle(.secondary)
                         }
                         .tag(doc.id)
+                        .contextMenu {
+                            Button(role: .destructive) { confirmDelete(doc) } label: {
+                                Label("删除文档", systemImage: "trash")
+                            }
+                        }
                     }
                     .frame(minWidth: 220, maxWidth: 300)
 
@@ -59,7 +64,14 @@ struct LibraryView: View {
                 }
             }
         }
-        .onAppear { reload() }
+        .onAppear {
+            reload()
+            loadDetail()
+        }
+        // 选中变化时加载识别结果（此前漏掉，导致详情永远显示"尚无识别结果"）
+        .onChange(of: selectedDocID) { _ in
+            loadDetail()
+        }
         // 任务完成会改变识别结果，任务列表变化时刷新
         .onChange(of: appState.taskQueue.tasks.map(\.updatedAt)) { _ in
             reload()
@@ -88,6 +100,9 @@ struct LibraryView: View {
                             sidebarSelection = .chat
                         } label: { Label("发到对话", systemImage: "bubble.left") }
                     }
+                    Button(role: .destructive) {
+                        confirmDelete(doc)
+                    } label: { Label("删除", systemImage: "trash") }
                 }
                 .padding()
 
@@ -112,8 +127,37 @@ struct LibraryView: View {
         documents = (try? appState.store.listDocuments()) ?? []
     }
 
+    /// 删除确认（级联删除：识别结果/任务/版本/磁盘文件）
+    private func confirmDelete(_ doc: DocumentRecord) {
+        let alert = NSAlert()
+        alert.messageText = "删除文档「\(doc.name)」？"
+        alert.informativeText = "将同时删除其全部版本、识别结果、关联任务与转换产物，此操作不可撤销。"
+        alert.addButton(withTitle: "删除")
+        alert.addButton(withTitle: "取消")
+        alert.alertStyle = .warning
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+
+        do {
+            try appState.store.deleteDocument(id: doc.id)
+            appState.taskQueue.refresh()
+            if selectedDocID == doc.id { selectedDocID = nil }
+            reload()
+            loadDetail()
+        } catch {
+            let fail = NSAlert()
+            fail.messageText = "删除失败"
+            fail.informativeText = error.readableMessage
+            fail.runModal()
+        }
+    }
+
     private func loadDetail() {
-        guard let id = selectedDocID else { return }
+        guard let id = selectedDocID else {
+            detailText = ""
+            detailEngine = ""
+            detailVersions = []
+            return
+        }
         detailVersions = (try? appState.store.versions(of: id)) ?? []
         if let result = try? appState.store.latestOCRResult(of: id) {
             detailText = result.text

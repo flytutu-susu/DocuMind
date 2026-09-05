@@ -102,6 +102,31 @@ final class DocuMindTests: XCTestCase {
         XCTAssertTrue(try store.listTasks().contains(where: { $0.id == task.id }))
     }
 
+    /// 删除文档：级联清理记录与磁盘文件
+    func testDocumentStoreDelete() throws {
+        let store = DocumentStore()
+        let src = FileManager.default.temporaryDirectory
+            .appendingPathComponent("store-del-\(UUID().uuidString).txt")
+        try "待删除".write(to: src, atomically: true, encoding: .utf8)
+        defer { try? FileManager.default.removeItem(at: src) }
+
+        let doc = try store.createDocument(name: "待删除.txt", kind: .image, sourceFile: src)
+        let versionURL = try store.latestVersionURL(of: doc.id)
+        _ = try store.createTask(kind: .ocr, documentID: doc.id, fileName: doc.name)
+        try store.saveOCRResult(documentID: doc.id, engine: "test", mode: "text",
+                                text: "abc", blocks: [], pageCount: 1)
+
+        try store.deleteDocument(id: doc.id)
+
+        XCTAssertNil(try store.document(id: doc.id))
+        XCTAssertNil(try store.latestOCRResult(of: doc.id))
+        XCTAssertTrue(try store.versions(of: doc.id).isEmpty)
+        if let versionURL {
+            XCTAssertFalse(FileManager.default.fileExists(
+                atPath: versionURL.deletingLastPathComponent().path), "磁盘目录应被清理")
+        }
+    }
+
     // MARK: - Layout 层
 
     /// markdown 表格解析

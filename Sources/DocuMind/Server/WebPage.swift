@@ -317,11 +317,24 @@ async function loadDocuments() {
     }
     list.innerHTML = docs.map(d =>
       '<div class="doc-item" onclick="showDocument(\'' + d.id + '\')">' +
-      '<div class="name">📄 ' + escapeHtml(d.name) + '</div>' +
+      '<div class="row"><div class="name">📄 ' + escapeHtml(d.name) + '</div>' +
+      '<button class="btn secondary shrink" style="padding:4px 12px;font-size:12px" onclick="event.stopPropagation();deleteDocument(\'' + d.id + '\')">删除</button></div>' +
       '<div class="sub">' + d.kind_name + ' · 版本 ' + d.versions + (d.has_ocr_result ? ' · 已识别' : '') + ' · ' + (d.created_at || '').slice(0, 16).replace('T', ' ') + '</div>' +
       '</div>'
     ).join('');
   } catch (e) { /* 忽略 */ }
+}
+async function deleteDocument(id) {
+  if (!confirm('删除该文档？\n将同时删除其版本、识别结果与关联任务，不可撤销。')) return;
+  try {
+    const resp = await fetch('/api/documents/' + id, { method: 'DELETE' });
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok) throw new Error(data.error || ('HTTP ' + resp.status));
+    document.getElementById('docText').classList.add('hidden');
+    loadDocuments();
+  } catch (e) {
+    alert('删除失败：' + e.message);
+  }
 }
 async function showDocument(id) {
   try {
