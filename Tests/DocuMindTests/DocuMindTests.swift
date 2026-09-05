@@ -239,7 +239,8 @@ final class DocuMindTests: XCTestCase {
         let router = WebAPIRouter(appState: appState)
 
         func req(_ path: String, method: String = "GET") -> HTTPRequest {
-            HTTPRequest(method: method, path: path, query: [:], headers: [:], body: Data(), remoteAddress: "test")
+            // 以本机身份请求（local 全量可见）
+            HTTPRequest(method: method, path: path, query: [:], headers: [:], body: Data(), remoteAddress: "127.0.0.1")
         }
 
         // 任务详情（参数化路径）
