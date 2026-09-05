@@ -204,4 +204,38 @@ final class DocuMindTests: XCTestCase {
         XCTAssertTrue(text.contains("张三"))
         XCTAssertTrue(text.contains("第二页内容"))
     }
+
+    // MARK: - Web 路由
+
+    /// 参数化路径路由回归测试（/api/tasks/{id} 曾因下标越界全部 404）
+    @MainActor
+    func testRouterParameterizedRoutes() async throws {
+        let appState = AppState()
+        let router = WebAPIRouter(appState: appState)
+
+        func req(_ path: String, method: String = "GET") -> HTTPRequest {
+            HTTPRequest(method: method, path: path, query: [:], headers: [:], body: Data(), remoteAddress: "test")
+        }
+
+        // 任务详情（参数化路径）
+        let task = try appState.store.createTask(kind: .ocr, documentID: nil, fileName: "路由测试.pdf")
+        let detailResp = await router.handle(req("/api/tasks/\(task.id.uuidString)"))
+        XCTAssertEqual(detailResp.statusCode, 200, "GET /api/tasks/{id} 应返回 200")
+
+        // 任务下载（参数化路径，任务未完成 → 404 属预期行为，但路由必须命中）
+        let downloadResp = await router.handle(req("/api/tasks/\(task.id.uuidString)/download"))
+        XCTAssertEqual(downloadResp.statusCode, 404, "未完成任务下载应返回 404（路由命中、无产物）")
+        let downloadBody = String(decoding: downloadResp.body, as: UTF8.self)
+        XCTAssertTrue(downloadBody.contains("产物"), "应返回产物缺失错误而非路由 404")
+
+        // 任务/文档列表
+        XCTAssertEqual(await router.handle(req("/api/tasks")).statusCode, 200)
+        XCTAssertEqual(await router.handle(req("/api/documents")).statusCode, 200)
+        XCTAssertEqual(await router.handle(req("/api/status")).statusCode, 200)
+
+        // 不存在的任务 → 404
+        XCTAssertEqual(await router.handle(req("/api/tasks/\(UUID().uuidString)")).statusCode, 404)
+        // 未知路径 → 404
+        XCTAssertEqual(await router.handle(req("/api/nope")).statusCode, 404)
+    }
 }

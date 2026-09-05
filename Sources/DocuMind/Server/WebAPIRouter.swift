@@ -35,17 +35,18 @@ final class WebAPIRouter {
         let method = request.method
 
         // 参数化路径：/api/tasks/{id}、/api/tasks/{id}/download、/api/documents/{id}
+        // 切分示例："/api/tasks/<uuid>" → ["api", "tasks", "<uuid>"]
         let components = path.split(separator: "/").map(String.init)
-        if method == "GET", components.count >= 3, components[1] == "api" {
-            if components[2] == "tasks", components.count >= 4, let id = UUID(uuidString: components[3]) {
-                if components.count == 5, components[4] == "download" {
+        if method == "GET", components.count >= 3, components[0] == "api" {
+            if components[1] == "tasks", let id = UUID(uuidString: components[2]) {
+                if components.count == 4, components[3] == "download" {
                     return await taskDownload(id: id)
                 }
-                if components.count == 4 {
+                if components.count == 3 {
                     return await taskDetail(id: id)
                 }
             }
-            if components[2] == "documents", components.count == 4, let id = UUID(uuidString: components[3]) {
+            if components[1] == "documents", components.count == 3, let id = UUID(uuidString: components[2]) {
                 return await documentDetail(id: id)
             }
         }
