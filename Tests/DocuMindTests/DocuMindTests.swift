@@ -229,13 +229,18 @@ final class DocuMindTests: XCTestCase {
         XCTAssertTrue(downloadBody.contains("产物"), "应返回产物缺失错误而非路由 404")
 
         // 任务/文档列表
-        XCTAssertEqual(await router.handle(req("/api/tasks")).statusCode, 200)
-        XCTAssertEqual(await router.handle(req("/api/documents")).statusCode, 200)
-        XCTAssertEqual(await router.handle(req("/api/status")).statusCode, 200)
+        let tasksResp = await router.handle(req("/api/tasks"))
+        XCTAssertEqual(tasksResp.statusCode, 200)
+        let docsResp = await router.handle(req("/api/documents"))
+        XCTAssertEqual(docsResp.statusCode, 200)
+        let statusResp = await router.handle(req("/api/status"))
+        XCTAssertEqual(statusResp.statusCode, 200)
 
         // 不存在的任务 → 404
-        XCTAssertEqual(await router.handle(req("/api/tasks/\(UUID().uuidString)")).statusCode, 404)
+        let missingTask = await router.handle(req("/api/tasks/\(UUID().uuidString)"))
+        XCTAssertEqual(missingTask.statusCode, 404)
         // 未知路径 → 404
-        XCTAssertEqual(await router.handle(req("/api/nope")).statusCode, 404)
+        let unknown = await router.handle(req("/api/nope"))
+        XCTAssertEqual(unknown.statusCode, 404)
     }
 }
